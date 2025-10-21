@@ -6,10 +6,10 @@ BiSindoDetector/
 ├── app/
 │   ├── src/
 │   │   ├── main/
-│   │   │   ├── java/com/yourname/bisindodetector/
-│   │   │   │   ├── MainActivity.java
-│   │   │   │   ├── YoloDetector.java
-│   │   │   │   └── OverlayView.java
+│   │   │   ├── kotlin/com/example/bisindodetector/
+│   │   │   │   ├── MainActivity.kt
+│   │   │   │   ├── YoloDetector.kt
+│   │   │   │   └── OverlayView.kt
 │   │   │   ├── res/
 │   │   │   │   ├── layout/
 │   │   │   │   │   └── activity_main.xml
@@ -17,13 +17,12 @@ BiSindoDetector/
 │   │   │   │   │   ├── colors.xml
 │   │   │   │   │   └── strings.xml
 │   │   │   │   └── drawable/
-│   │   │   │       └── ic_launcher_background.xml
 │   │   │   ├── assets/
-│   │   │   │   └── bisindo_model_416.torchscript  ← PUT YOUR MODEL HERE
+│   │   │   │   └── bisindo_model_416.torchscript
 │   │   │   └── AndroidManifest.xml
-│   │   └── build.gradle
-│   └── build.gradle (Project level)
-└── settings.gradle
+│   │   └── build.gradle.kts
+│   └── build.gradle.kts (Project level)
+└── settings.gradle.kts
 ```
 
 ---
@@ -35,10 +34,11 @@ BiSindoDetector/
 ```gradle
 // Top-level build file where you can add configuration options common to all sub-projects/modules.
 plugins {
-    id("com.android.application") version "8.12.3" apply false
+    id("com.android.application") version "8.2.0" apply false
+    id("org.jetbrains.kotlin.android") version "1.9.20" apply false
 }
 
-tasks.register("clean", Delete::class){
+tasks.register("clean", Delete::class) {
     delete(rootProject.layout.buildDirectory)
 }
 ```
@@ -79,11 +79,12 @@ include(":app")
 ```gradle
 plugins {
     id("com.android.application")
+    id("org.jetbrains.kotlin.android")
 }
 
 android {
     namespace = "com.example.bisindodetector"
-    compileSdk = 36
+    compileSdk = 34
 
     defaultConfig {
         applicationId = "com.example.bisindodetector"
@@ -94,7 +95,6 @@ android {
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
 
-        // Don't compress model file
         packaging {
             resources {
                 excludes += listOf("META-INF/NOTICE.md", "META-INF/LICENSE.md")
@@ -117,32 +117,43 @@ android {
         targetCompatibility = JavaVersion.VERSION_1_8
     }
 
-    // Prevent compression of torchscript files
+    kotlinOptions {
+        jvmTarget = "1.8"
+    }
+
+    buildFeatures {
+        viewBinding = true
+    }
+
     androidResources {
         noCompress += "torchscript"
     }
 }
 
 dependencies {
-    implementation(libs.appcompat)
-    implementation(libs.material)
-    implementation(libs.constraintlayout)
+    implementation("androidx.core:core-ktx:1.12.0")
+    implementation("androidx.appcompat:appcompat:1.6.1")
+    implementation("com.google.android.material:material:1.11.0")
+    implementation("androidx.constraintlayout:constraintlayout:2.1.4")
 
     // CameraX dependencies
-    implementation("androidx.camera:camera-camera2:1.5.1")
-    implementation("androidx.camera:camera-lifecycle:1.5.1")
-    implementation("androidx.camera:camera-view:1.5.1")
+    implementation("androidx.camera:camera-camera2:1.3.1")
+    implementation("androidx.camera:camera-lifecycle:1.3.1")
+    implementation("androidx.camera:camera-view:1.3.1")
 
     // PyTorch Mobile
     implementation("org.pytorch:pytorch_android_lite:2.1.0")
     implementation("org.pytorch:pytorch_android_torchvision_lite:2.1.0")
 
-    // Testing
-    testImplementation(libs.junit)
-    androidTestImplementation(libs.ext.junit)
-    androidTestImplementation(libs.espresso.core)
-}
+    // Coroutines
+    implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.7.3")
+    implementation("org.jetbrains.kotlinx:kotlinx-coroutines-core:1.7.3")
 
+    // Testing
+    testImplementation("junit:junit:4.13.2")
+    androidTestImplementation("androidx.test.ext:junit:1.1.5")
+    androidTestImplementation("androidx.test.espresso:espresso-core:3.5.1")
+}
 ```
 
 ---
@@ -159,7 +170,7 @@ dependencies {
     <!-- Camera permission -->
     <uses-permission android:name="android.permission.CAMERA" />
 
-    <!-- Camera feature -->
+    <!-- Camera features -->
     <uses-feature
         android:name="android.hardware.camera"
         android:required="true" />
@@ -192,746 +203,723 @@ dependencies {
 
 ---
 
-## File 5: MainActivity.java
+## File 5: MainActivity.kt
 
-**File Path:** `app/src/main/java/com/yourname/bisindodetector/MainActivity.java`
+**File Path:** `app/src/main/java/com/yourname/bisindodetector/MainActivity.kt`
 
-```java
-package com.example.bisindodetector;
+```kt
+package com.example.bisindodetector
 
-import androidx.annotation.NonNull;
-import androidx.annotation.OptIn;
-import androidx.appcompat.app.AppCompatActivity;
-import androidx.camera.core.*;
-import androidx.camera.lifecycle.ProcessCameraProvider;
-import androidx.camera.view.PreviewView;
-import androidx.core.app.ActivityCompat;
-import androidx.core.content.ContextCompat;
+import android.Manifest
+import android.content.pm.PackageManager
+import android.graphics.Bitmap
+import android.graphics.BitmapFactory
+import android.graphics.Matrix
+import android.graphics.Rect
+import android.graphics.YuvImage
+import android.os.Bundle
+import android.util.Log
+import android.widget.Toast
+import androidx.activity.result.contract.ActivityResultContracts
+import androidx.appcompat.app.AppCompatActivity
+import androidx.camera.core.*
+import androidx.camera.lifecycle.ProcessCameraProvider
+import androidx.core.content.ContextCompat
+import com.example.bisindodetector.databinding.ActivityMainBinding
+import kotlinx.coroutines.*
+import java.io.ByteArrayOutputStream
+import java.util.concurrent.ExecutorService
+import java.util.concurrent.Executors
 
-import android.Manifest;
-import android.content.pm.PackageManager;
-import android.graphics.Bitmap;
-import android.graphics.BitmapFactory;
-import android.graphics.Matrix;
-import android.graphics.Rect;
-import android.graphics.YuvImage;
-import android.media.Image;
-import android.os.Bundle;
-import android.util.Log;
-import android.view.View;
-import android.widget.Button;
-import android.widget.TextView;
-import android.widget.Toast;
+class MainActivity : AppCompatActivity() {
 
-import com.google.common.util.concurrent.ListenableFuture;
+    companion object {
+        private const val TAG = "BiSindoDetector"
+        private const val LETTER_HOLD_TIME = 1500L // 1.5 seconds
+    }
 
-import java.io.ByteArrayOutputStream;
-import java.io.IOException;
-import java.nio.ByteBuffer;
-import java.util.List;
-import java.util.concurrent.ExecutionException;
-import java.util.concurrent.ExecutorService;
-import java.util.concurrent.Executors;
-
-public class MainActivity extends AppCompatActivity {
-    private static final String TAG = "BiSindoDetector";
-    private static final int PERMISSION_REQUEST_CODE = 100;
-
-    // UI Components
-    private PreviewView previewView;
-    private OverlayView overlayView;
-    private TextView detectedTextView;
-    private TextView fpsTextView;
-    private Button clearButton;
-
-    // Detection
-    private YoloDetector detector;
-    private ExecutorService cameraExecutor;
+    private lateinit var binding: ActivityMainBinding
+    private lateinit var cameraExecutor: ExecutorService
+    private var detector: YoloDetector? = null
 
     // Word building logic
-    private String lastDetectedLetter = "";
-    private long lastDetectionTime = 0;
-    private long letterHoldTime = 1500; // Hold letter for 1.5 seconds to add
-    private StringBuilder detectedWord = new StringBuilder();
+    private var lastDetectedLetter = ""
+    private var lastDetectionTime = 0L
+    private val detectedWord = StringBuilder()
 
     // FPS calculation
-    private long frameCount = 0;
-    private long lastFpsTime = System.currentTimeMillis();
-    private int currentFps = 0;
+    private var frameCount = 0L
+    private var lastFpsTime = System.currentTimeMillis()
+    private var currentFps = 0
 
-    @Override
-    protected void onCreate(Bundle savedInstanceState) {
-        super.onCreate(savedInstanceState);
-        setContentView(R.layout.activity_main);
+    // Camera permission launcher
+    private val requestPermissionLauncher = registerForActivityResult(
+        ActivityResultContracts.RequestPermission()
+    ) { isGranted ->
+        if (isGranted) {
+            startCamera()
+        } else {
+            Toast.makeText(
+                this,
+                "Camera permission is required",
+                Toast.LENGTH_LONG
+            ).show()
+            finish()
+        }
+    }
 
-        // Initialize UI components
-        previewView = findViewById(R.id.previewView);
-        overlayView = findViewById(R.id.overlayView);
-        detectedTextView = findViewById(R.id.detectedText);
-        fpsTextView = findViewById(R.id.fpsText);
-        clearButton = findViewById(R.id.clearButton);
-
-        // Clear button click listener
-        clearButton.setOnClickListener(v -> {
-            detectedWord.setLength(0);
-            detectedTextView.setText("Detected: ");
-            lastDetectedLetter = "";
-            Toast.makeText(this, "Cleared!", Toast.LENGTH_SHORT).show();
-        });
+    override fun onCreate(savedInstanceState: Bundle?) {
+        super.onCreate(savedInstanceState)
+        binding = ActivityMainBinding.inflate(layoutInflater)
+        setContentView(binding.root)
 
         // Initialize camera executor
-        cameraExecutor = Executors.newSingleThreadExecutor();
+        cameraExecutor = Executors.newSingleThreadExecutor()
+
+        // Setup clear button
+        binding.clearButton.setOnClickListener {
+            detectedWord.clear()
+            binding.detectedText.text = "Detected: "
+            lastDetectedLetter = ""
+            Toast.makeText(this, "Cleared!", Toast.LENGTH_SHORT).show()
+        }
 
         // Load YOLO detector
         try {
-            detector = new YoloDetector(this, "bisindo_model_416.torchscript", 416);
-            Log.d(TAG, "Model loaded successfully");
-            Toast.makeText(this, "Model loaded successfully", Toast.LENGTH_SHORT).show();
-        } catch (IOException e) {
-            Log.e(TAG, "Error loading model", e);
-            Toast.makeText(this, "Error loading model: " + e.getMessage(),
-                    Toast.LENGTH_LONG).show();
-            finish();
-            return;
+            detector = YoloDetector(this, "bisindo_model_416.torchscript", 416)
+            Log.d(TAG, "Model loaded successfully")
+            Toast.makeText(this, "Model loaded successfully", Toast.LENGTH_SHORT).show()
+        } catch (e: Exception) {
+            Log.e(TAG, "Error loading model", e)
+            Toast.makeText(
+                this,
+                "Error loading model: ${e.message}",
+                Toast.LENGTH_LONG
+            ).show()
+            finish()
+            return
         }
 
         // Check and request camera permission
-        if (checkPermissions()) {
-            startCamera();
-        } else {
-            requestPermissions();
-        }
-    }
-
-    private boolean checkPermissions() {
-        return ContextCompat.checkSelfPermission(this, Manifest.permission.CAMERA)
-                == PackageManager.PERMISSION_GRANTED;
-    }
-
-    private void requestPermissions() {
-        ActivityCompat.requestPermissions(this,
-                new String[]{Manifest.permission.CAMERA},
-                PERMISSION_REQUEST_CODE);
-    }
-
-    @Override
-    public void onRequestPermissionsResult(int requestCode, @NonNull String[] permissions,
-                                           @NonNull int[] grantResults) {
-        super.onRequestPermissionsResult(requestCode, permissions, grantResults);
-        if (requestCode == PERMISSION_REQUEST_CODE) {
-            if (grantResults.length > 0 && grantResults[0] == PackageManager.PERMISSION_GRANTED) {
-                startCamera();
-            } else {
-                Toast.makeText(this, "Camera permission is required",
-                        Toast.LENGTH_LONG).show();
-                finish();
+        when {
+            ContextCompat.checkSelfPermission(
+                this,
+                Manifest.permission.CAMERA
+            ) == PackageManager.PERMISSION_GRANTED -> {
+                startCamera()
+            }
+            else -> {
+                requestPermissionLauncher.launch(Manifest.permission.CAMERA)
             }
         }
     }
 
-    private void startCamera() {
-        ListenableFuture<ProcessCameraProvider> cameraProviderFuture = ProcessCameraProvider.getInstance(this); // Specify the generic type here
+    private fun startCamera() {
+        val cameraProviderFuture = ProcessCameraProvider.getInstance(this)
 
-        cameraProviderFuture.addListener(() -> {
+        cameraProviderFuture.addListener({
             try {
-                // Now the compiler knows .get() will return a ProcessCameraProvider
-                ProcessCameraProvider cameraProvider = cameraProviderFuture.get();
-                bindCameraUseCases(cameraProvider);
-            } catch (ExecutionException | InterruptedException e) {
-                Log.e(TAG, "Error starting camera", e);
-                Toast.makeText(this, "Error starting camera", Toast.LENGTH_SHORT).show();
+                val cameraProvider = cameraProviderFuture.get()
+                bindCameraUseCases(cameraProvider)
+            } catch (e: Exception) {
+                Log.e(TAG, "Error starting camera", e)
+                Toast.makeText(this, "Error starting camera", Toast.LENGTH_SHORT).show()
             }
-        }, ContextCompat.getMainExecutor(this));
-        }
+        }, ContextCompat.getMainExecutor(this))
+    }
 
-
-    @OptIn(markerClass = ExperimentalGetImage.class) private void bindCameraUseCases(ProcessCameraProvider cameraProvider) {
+    @androidx.annotation.OptIn(androidx.camera.core.ExperimentalGetImage::class)
+    private fun bindCameraUseCases(cameraProvider: ProcessCameraProvider) {
         // Preview use case
-        Preview preview = new Preview.Builder()
-                .build();
-        preview.setSurfaceProvider(previewView.getSurfaceProvider());
+        val preview = Preview.Builder()
+            .build()
+            .also {
+                it.setSurfaceProvider(binding.previewView.surfaceProvider)
+            }
 
         // Image analysis use case
-        ImageAnalysis imageAnalysis = new ImageAnalysis.Builder()
-                .setBackpressureStrategy(ImageAnalysis.STRATEGY_KEEP_ONLY_LATEST)
-                .setOutputImageFormat(ImageAnalysis.OUTPUT_IMAGE_FORMAT_YUV_420_888)
-                .build();
+        val imageAnalysis = ImageAnalysis.Builder()
+            .setBackpressureStrategy(ImageAnalysis.STRATEGY_KEEP_ONLY_LATEST)
+            .setOutputImageFormat(ImageAnalysis.OUTPUT_IMAGE_FORMAT_YUV_420_888)
+            .build()
 
-        imageAnalysis.setAnalyzer(cameraExecutor, this::analyzeImage);
+        imageAnalysis.setAnalyzer(cameraExecutor) { imageProxy ->
+            analyzeImage(imageProxy)
+        }
 
         // Select front camera
-        CameraSelector cameraSelector = new CameraSelector.Builder()
-                .requireLensFacing(CameraSelector.LENS_FACING_FRONT)
-                .build();
+        val cameraSelector = CameraSelector.Builder()
+            .requireLensFacing(CameraSelector.LENS_FACING_FRONT)
+            .build()
 
         try {
             // Unbind all use cases before rebinding
-            cameraProvider.unbindAll();
+            cameraProvider.unbindAll()
 
             // Bind use cases to camera
             cameraProvider.bindToLifecycle(
-                    this,
-                    cameraSelector,
-                    preview,
-                    imageAnalysis
-            );
+                this,
+                cameraSelector,
+                preview,
+                imageAnalysis
+            )
 
-            Log.d(TAG, "Camera use cases bound successfully");
-        } catch (Exception e) {
-            Log.e(TAG, "Use case binding failed", e);
-            Toast.makeText(this, "Camera binding failed", Toast.LENGTH_SHORT).show();
+            Log.d(TAG, "Camera use cases bound successfully")
+        } catch (e: Exception) {
+            Log.e(TAG, "Use case binding failed", e)
+            Toast.makeText(this, "Camera binding failed", Toast.LENGTH_SHORT).show()
         }
     }
 
     @androidx.camera.core.ExperimentalGetImage
-    private void analyzeImage(ImageProxy imageProxy) {
+    private fun analyzeImage(imageProxy: ImageProxy) {
         // Calculate FPS
-        frameCount++;
-        long currentTime = System.currentTimeMillis();
+        frameCount++
+        val currentTime = System.currentTimeMillis()
         if (currentTime - lastFpsTime >= 1000) {
-            currentFps = (int) frameCount;
-            frameCount = 0;
-            lastFpsTime = currentTime;
+            currentFps = frameCount.toInt()
+            frameCount = 0
+            lastFpsTime = currentTime
 
-            runOnUiThread(() -> fpsTextView.setText("FPS: " + currentFps));
+            runOnUiThread {
+                binding.fpsText.text = "FPS: $currentFps"
+            }
         }
 
         // Convert ImageProxy to Bitmap
-        Bitmap bitmap = imageProxyToBitmap(imageProxy);
+        val bitmap = imageProxyToBitmap(imageProxy)
         if (bitmap == null) {
-            imageProxy.close();
-            return;
+            imageProxy.close()
+            return
         }
-// ...
+
         // Run detection
-        List<YoloDetector.Detection> detections = detector.detect(bitmap); // <- Tambahkan tipe generik
+        val detections = detector?.detect(bitmap) ?: emptyList()
 
         // Update UI on main thread
-        runOnUiThread(() -> {
+        runOnUiThread {
             // Update overlay with bounding boxes
-            overlayView.setDetections(detections);
+            binding.overlayView.setDetections(detections)
 
             // Process detections for word building
-            if (!detections.isEmpty()) {
-                // Get the detection with highest confidence
-                // Kode ini sekarang akan berfungsi dengan baik
-                YoloDetector.Detection bestDetection = detections.get(0);
-                processDetection(bestDetection);
+            if (detections.isNotEmpty()) {
+                // Get the detection with highest confidence (already sorted)
+                val bestDetection = detections.first()
+                processDetection(bestDetection)
             } else {
                 // No detection - reset
-                lastDetectedLetter = "";
+                lastDetectedLetter = ""
             }
-        });
+        }
 
         // Clean up
-        imageProxy.close();
+        imageProxy.close()
     }
 
-    private void processDetection(YoloDetector.Detection detection) {
-        long currentTime = System.currentTimeMillis();
-        String detectedLetter = detection.label;
+    private fun processDetection(detection: YoloDetector.Detection) {
+        val currentTime = System.currentTimeMillis()
+        val detectedLetter = detection.label
 
-        if (detectedLetter.equals(lastDetectedLetter)) {
+        if (detectedLetter == lastDetectedLetter) {
             // Same letter detected - check if held long enough
-            long holdDuration = currentTime - lastDetectionTime;
+            val holdDuration = currentTime - lastDetectionTime
 
-            if (holdDuration >= letterHoldTime) {
+            if (holdDuration >= LETTER_HOLD_TIME) {
                 // Add letter to word
-                detectedWord.append(detectedLetter);
-                detectedTextView.setText("Detected: " + detectedWord.toString());
+                detectedWord.append(detectedLetter)
+                binding.detectedText.text = "Detected: $detectedWord"
 
                 // Reset detection to avoid repeated additions
-                lastDetectionTime = currentTime;
+                lastDetectionTime = currentTime
 
                 // Visual feedback
-                overlayView.flashGreen();
+                binding.overlayView.flashGreen()
 
-                Log.d(TAG, "Added letter: " + detectedLetter + " | Word: " + detectedWord);
+                Log.d(TAG, "Added letter: $detectedLetter | Word: $detectedWord")
             }
         } else {
             // New letter detected
-            lastDetectedLetter = detectedLetter;
-            lastDetectionTime = currentTime;
+            lastDetectedLetter = detectedLetter
+            lastDetectionTime = currentTime
         }
     }
 
     @androidx.camera.core.ExperimentalGetImage
-    private Bitmap imageProxyToBitmap(ImageProxy imageProxy) {
-        Image image = imageProxy.getImage();
-        if (image == null) return null;
+    private fun imageProxyToBitmap(imageProxy: ImageProxy): Bitmap? {
+        val image = imageProxy.image ?: return null
 
-        try {
+        return try {
             // Get image planes
-            ByteBuffer yBuffer = image.getPlanes()[0].getBuffer();
-            ByteBuffer uBuffer = image.getPlanes()[1].getBuffer();
-            ByteBuffer vBuffer = image.getPlanes()[2].getBuffer();
+            val yBuffer = image.planes[0].buffer
+            val uBuffer = image.planes[1].buffer
+            val vBuffer = image.planes[2].buffer
 
-            int ySize = yBuffer.remaining();
-            int uSize = uBuffer.remaining();
-            int vSize = vBuffer.remaining();
+            val ySize = yBuffer.remaining()
+            val uSize = uBuffer.remaining()
+            val vSize = vBuffer.remaining()
 
             // Convert to NV21 format
-            byte[] nv21 = new byte[ySize + uSize + vSize];
-            yBuffer.get(nv21, 0, ySize);
-            vBuffer.get(nv21, ySize, vSize);
-            uBuffer.get(nv21, ySize + vSize, uSize);
+            val nv21 = ByteArray(ySize + uSize + vSize)
+            yBuffer.get(nv21, 0, ySize)
+            vBuffer.get(nv21, ySize, vSize)
+            uBuffer.get(nv21, ySize + vSize, uSize)
 
             // Convert NV21 to JPEG
-            YuvImage yuvImage = new YuvImage(nv21, android.graphics.ImageFormat.NV21,
-                    imageProxy.getWidth(), imageProxy.getHeight(), null);
-            ByteArrayOutputStream out = new ByteArrayOutputStream();
-            yuvImage.compressToJpeg(new Rect(0, 0, imageProxy.getWidth(),
-                    imageProxy.getHeight()), 100, out);
+            val yuvImage = YuvImage(
+                nv21,
+                android.graphics.ImageFormat.NV21,
+                imageProxy.width,
+                imageProxy.height,
+                null
+            )
+            val out = ByteArrayOutputStream()
+            yuvImage.compressToJpeg(
+                Rect(0, 0, imageProxy.width, imageProxy.height),
+                100,
+                out
+            )
 
-            byte[] imageBytes = out.toByteArray();
-            Bitmap bitmap = BitmapFactory.decodeByteArray(imageBytes, 0, imageBytes.length);
+            val imageBytes = out.toByteArray()
+            val bitmap = BitmapFactory.decodeByteArray(imageBytes, 0, imageBytes.size)
 
-            // Mirror the image for front camera (so it looks natural)
-            Matrix matrix = new Matrix();
-            matrix.preScale(-1.0f, 1.0f);
-            return Bitmap.createBitmap(bitmap, 0, 0, bitmap.getWidth(),
-                    bitmap.getHeight(), matrix, false);
-        } catch (Exception e) {
-            Log.e(TAG, "Error converting ImageProxy to Bitmap", e);
-            return null;
+            // Mirror the image for front camera
+            val matrix = Matrix().apply {
+                preScale(-1.0f, 1.0f)
+            }
+            Bitmap.createBitmap(
+                bitmap,
+                0,
+                0,
+                bitmap.width,
+                bitmap.height,
+                matrix,
+                false
+            )
+        } catch (e: Exception) {
+            Log.e(TAG, "Error converting ImageProxy to Bitmap", e)
+            null
         }
     }
 
-    @Override
-    protected void onDestroy() {
-        super.onDestroy();
-        cameraExecutor.shutdown();
-        if (detector != null) {
-            detector.close();
-        }
-    }
-
-    @Override
-    protected void onPause() {
-        super.onPause();
-        // You can pause detection here if needed
-    }
-
-    @Override
-    protected void onResume() {
-        super.onResume();
-        // Resume detection if paused
+    override fun onDestroy() {
+        super.onDestroy()
+        cameraExecutor.shutdown()
+        detector?.close()
     }
 }
 ```
 
 ---
 
-## File 6: YoloDetector.java
+## File 6: YoloDetector.kt
 
-**File Path:** `app/src/main/java/com/yourname/bisindodetector/YoloDetector.java`
+**File Path:** `app/src/main/java/com/yourname/bisindodetector/YoloDetector.kt`
 
-```java
-package com.yourname.bisindodetector;
+```kt
+package com.example.bisindodetector
 
-import android.content.Context;
-import android.graphics.Bitmap;
-import android.graphics.RectF;
-import android.util.Log;
+import android.content.Context
+import android.graphics.Bitmap
+import android.graphics.RectF
+import android.util.Log
+import org.pytorch.IValue
+import org.pytorch.Module
+import org.pytorch.Tensor
+import org.pytorch.torchvision.TensorImageUtils
+import java.io.File
+import java.io.FileOutputStream
+import java.io.IOException
 
-import org.pytorch.IValue;
-import org.pytorch.Module;
-import org.pytorch.Tensor;
-import org.pytorch.torchvision.TensorImageUtils;
-
-import java.io.File;
-import java.io.FileOutputStream;
-import java.io.IOException;
-import java.io.InputStream;
-import java.io.OutputStream;
-import java.util.ArrayList;
-import java.util.List;
-
-public class YoloDetector {
-    private static final String TAG = "YoloDetector";
-    
-    private Module model;
-    private int inputSize;
-    private float confidenceThreshold = 0.45f;
-    private float iouThreshold = 0.4f;
-    
-    // BiSindo alphabet labels - UPDATE THESE to match your model's classes
-    private String[] labels = {
-        "A", "B", "C", "D", "E", "F", "G", "H", "I", "J", 
-        "K", "L", "M", "N", "O", "P", "Q", "R", "S", "T", 
-        "U", "V", "W", "X", "Y", "Z"
-    };
-
-    // ImageNet normalization (standard for YOLO)
-    private static final float[] MEAN = {0.485f, 0.456f, 0.406f};
-    private static final float[] STD = {0.229f, 0.224f, 0.225f};
-
-    public static class Detection {
-        public RectF box;
-        public String label;
-        public float confidence;
-
-        public Detection(RectF box, String label, float confidence) {
-            this.box = box;
-            this.label = label;
-            this.confidence = confidence;
-        }
+class YoloDetector(
+    context: Context,
+    modelName: String,
+    private val inputSize: Int
+) {
+    companion object {
+        private const val TAG = "YoloDetector"
+        
+        // ImageNet normalization
+        private val MEAN = floatArrayOf(0.485f, 0.456f, 0.406f)
+        private val STD = floatArrayOf(0.229f, 0.224f, 0.225f)
     }
 
-    public YoloDetector(Context context, String modelName, int inputSize) throws IOException {
-        this.inputSize = inputSize;
-        
-        // Load model from assets
-        String modelPath = assetFilePath(context, modelName);
-        model = Module.load(modelPath);
-        
-        Log.d(TAG, "Model loaded: " + modelPath);
-        Log.d(TAG, "Input size: " + inputSize + "x" + inputSize);
-        Log.d(TAG, "Number of classes: " + labels.length);
+    data class Detection(
+        val box: RectF,
+        val label: String,
+        val confidence: Float
+    )
+
+    private val model: Module
+    private var confidenceThreshold = 0.45f
+    private var iouThreshold = 0.4f
+
+    // BiSindo alphabet labels - UPDATE THESE to match your model's classes
+    private val labels = arrayOf(
+        "A", "B", "C", "D", "E", "F", "G", "H", "I", "J",
+        "K", "L", "M", "N", "O", "P", "Q", "R", "S", "T",
+        "U", "V", "W", "X", "Y", "Z"
+    )
+
+    init {
+        val modelPath = assetFilePath(context, modelName)
+        model = Module.load(modelPath)
+
+        Log.d(TAG, "Model loaded: $modelPath")
+        Log.d(TAG, "Input size: ${inputSize}x$inputSize")
+        Log.d(TAG, "Number of classes: ${labels.size}")
     }
 
     /**
      * Copy model from assets to internal storage
      */
-    private String assetFilePath(Context context, String assetName) throws IOException {
-        File file = new File(context.getFilesDir(), assetName);
-        
+    private fun assetFilePath(context: Context, assetName: String): String {
+        val file = File(context.filesDir, assetName)
+
         // If file already exists and has content, return it
         if (file.exists() && file.length() > 0) {
-            Log.d(TAG, "Model already exists in internal storage");
-            return file.getAbsolutePath();
+            Log.d(TAG, "Model already exists in internal storage")
+            return file.absolutePath
         }
 
         // Copy from assets to internal storage
-        Log.d(TAG, "Copying model from assets to internal storage...");
-        try (InputStream is = context.getAssets().open(assetName);
-             OutputStream os = new FileOutputStream(file)) {
-            
-            byte[] buffer = new byte[4 * 1024];
-            int read;
-            while ((read = is.read(buffer)) != -1) {
-                os.write(buffer, 0, read);
+        Log.d(TAG, "Copying model from assets to internal storage...")
+        context.assets.open(assetName).use { inputStream ->
+            FileOutputStream(file).use { outputStream ->
+                val buffer = ByteArray(4 * 1024)
+                var read: Int
+                while (inputStream.read(buffer).also { read = it } != -1) {
+                    outputStream.write(buffer, 0, read)
+                }
+                outputStream.flush()
             }
-            os.flush();
         }
-        
-        Log.d(TAG, "Model copied successfully");
-        return file.getAbsolutePath();
+
+        Log.d(TAG, "Model copied successfully")
+        return file.absolutePath
     }
 
     /**
      * Detect BiSindo signs in the image
      */
-    public List detect(Bitmap bitmap) {
+    fun detect(bitmap: Bitmap): List<Detection> {
         // Resize bitmap to model input size
-        Bitmap resizedBitmap = Bitmap.createScaledBitmap(bitmap, inputSize, inputSize, true);
-        
+        val resizedBitmap = Bitmap.createScaledBitmap(bitmap, inputSize, inputSize, true)
+
         // Convert to tensor with normalization
-        Tensor inputTensor = TensorImageUtils.bitmapToFloat32Tensor(
+        val inputTensor = TensorImageUtils.bitmapToFloat32Tensor(
             resizedBitmap,
             MEAN,
             STD
-        );
-        
+        )
+
         // Run inference
-        Tensor outputTensor = model.forward(IValue.from(inputTensor)).toTensor();
-        
+        val outputTensor = model.forward(IValue.from(inputTensor)).toTensor()
+
         // Get output array
-        float[] outputs = outputTensor.getDataAsFloatArray();
-        long[] shape = outputTensor.shape();
-        
+        val outputs = outputTensor.dataAsFloatArray
+        val shape = outputTensor.shape()
+
         // Parse output shape
-        int batchSize = (int) shape[0];
-        int numPredictions = (int) shape[1];
-        int numValues = (int) shape[2]; // 5 + num_classes (x, y, w, h, conf, class_scores...)
-        
-        Log.d(TAG, "Output shape: [" + batchSize + ", " + numPredictions + ", " + numValues + "]");
-        
+        val batchSize = shape[0].toInt()
+        val numPredictions = shape[1].toInt()
+        val numValues = shape[2].toInt() // 5 + num_classes
+
+        Log.d(TAG, "Output shape: [$batchSize, $numPredictions, $numValues]")
+
         // Process predictions
-        List detections = processOutputs(outputs, numPredictions, numValues, 
-                                                    bitmap.getWidth(), bitmap.getHeight());
-        
+        val detections = processOutputs(
+            outputs,
+            numPredictions,
+            numValues,
+            bitmap.width,
+            bitmap.height
+        )
+
         // Apply Non-Maximum Suppression
-        return nonMaxSuppression(detections);
+        return nonMaxSuppression(detections)
     }
 
     /**
      * Process model outputs to extract detections
      */
-    private List processOutputs(float[] outputs, int numPredictions, 
-                                          int numValues, int originalWidth, int originalHeight) {
-        List detections = new ArrayList<>();
-        
-        for (int i = 0; i < numPredictions; i++) {
-            int offset = i * numValues;
-            
+    private fun processOutputs(
+        outputs: FloatArray,
+        numPredictions: Int,
+        numValues: Int,
+        originalWidth: Int,
+        originalHeight: Int
+    ): List<Detection> {
+        val detections = mutableListOf<Detection>()
+
+        for (i in 0 until numPredictions) {
+            val offset = i * numValues
+
             // YOLO output format: [x_center, y_center, width, height, objectness, class_scores...]
-            float xCenter = outputs[offset];
-            float yCenter = outputs[offset + 1];
-            float width = outputs[offset + 2];
-            float height = outputs[offset + 3];
-            float objectness = outputs[offset + 4];
-            
+            val xCenter = outputs[offset]
+            val yCenter = outputs[offset + 1]
+            val width = outputs[offset + 2]
+            val height = outputs[offset + 3]
+            val objectness = outputs[offset + 4]
+
             // Skip low confidence predictions
             if (objectness < confidenceThreshold) {
-                continue;
+                continue
             }
-            
+
             // Find class with highest score
-            int classIndex = 0;
-            float maxClassScore = outputs[offset + 5];
-            
-            for (int j = 1; j < labels.length && (offset + 5 + j) < outputs.length; j++) {
-                float score = outputs[offset + 5 + j];
-                if (score > maxClassScore) {
-                    maxClassScore = score;
-                    classIndex = j;
+            var classIndex = 0
+            var maxClassScore = outputs[offset + 5]
+
+            for (j in 1 until labels.size) {
+                if (offset + 5 + j < outputs.size) {
+                    val score = outputs[offset + 5 + j]
+                    if (score > maxClassScore) {
+                        maxClassScore = score
+                        classIndex = j
+                    }
                 }
             }
-            
+
             // Calculate final confidence
-            float confidence = objectness * maxClassScore;
-            
+            val confidence = objectness * maxClassScore
+
             if (confidence < confidenceThreshold) {
-                continue;
+                continue
             }
-            
+
             // Convert from normalized coordinates to pixel coordinates
-            float scaleX = (float) originalWidth / inputSize;
-            float scaleY = (float) originalHeight / inputSize;
-            
-            float pixelXCenter = xCenter * scaleX;
-            float pixelYCenter = yCenter * scaleY;
-            float pixelWidth = width * scaleX;
-            float pixelHeight = height * scaleY;
-            
-            float left = pixelXCenter - pixelWidth / 2;
-            float top = pixelYCenter - pixelHeight / 2;
-            float right = pixelXCenter + pixelWidth / 2;
-            float bottom = pixelYCenter + pixelHeight / 2;
-            
+            val scaleX = originalWidth.toFloat() / inputSize
+            val scaleY = originalHeight.toFloat() / inputSize
+
+            val pixelXCenter = xCenter * scaleX
+            val pixelYCenter = yCenter * scaleY
+            val pixelWidth = width * scaleX
+            val pixelHeight = height * scaleY
+
+            var left = pixelXCenter - pixelWidth / 2
+            var top = pixelYCenter - pixelHeight / 2
+            var right = pixelXCenter + pixelWidth / 2
+            var bottom = pixelYCenter + pixelHeight / 2
+
             // Clamp to image boundaries
-            left = Math.max(0, Math.min(left, originalWidth));
-            top = Math.max(0, Math.min(top, originalHeight));
-            right = Math.max(0, Math.min(right, originalWidth));
-            bottom = Math.max(0, Math.min(bottom, originalHeight));
-            
-            RectF box = new RectF(left, top, right, bottom);
-            String label = classIndex < labels.length ? labels[classIndex] : "Unknown";
-            
-            detections.add(new Detection(box, label, confidence));
+            left = left.coerceIn(0f, originalWidth.toFloat())
+            top = top.coerceIn(0f, originalHeight.toFloat())
+            right = right.coerceIn(0f, originalWidth.toFloat())
+            bottom = bottom.coerceIn(0f, originalHeight.toFloat())
+
+            val box = RectF(left, top, right, bottom)
+            val label = if (classIndex < labels.size) labels[classIndex] else "Unknown"
+
+            detections.add(Detection(box, label, confidence))
         }
-        
-        Log.d(TAG, "Found " + detections.size() + " detections before NMS");
-        return detections;
+
+        Log.d(TAG, "Found ${detections.size} detections before NMS")
+        return detections
     }
 
     /**
      * Apply Non-Maximum Suppression to remove overlapping boxes
      */
-    private List nonMaxSuppression(List detections) {
+    private fun nonMaxSuppression(detections: List<Detection>): List<Detection> {
         if (detections.isEmpty()) {
-            return detections;
+            return detections
         }
-        
-        List result = new ArrayList<>();
-        
-        // Sort by confidence (descending)
-        detections.sort((a, b) -> Float.compare(b.confidence, a.confidence));
-        
-        while (!detections.isEmpty()) {
+
+        val result = mutableListOf<Detection>()
+        val sortedDetections = detections.sortedByDescending { it.confidence }.toMutableList()
+
+        while (sortedDetections.isNotEmpty()) {
             // Take the detection with highest confidence
-            Detection best = detections.remove(0);
-            result.add(best);
-            
+            val best = sortedDetections.removeAt(0)
+            result.add(best)
+
             // Remove detections that overlap significantly with this one
-            detections.removeIf(detection -> 
+            sortedDetections.removeAll { detection ->
                 calculateIoU(best.box, detection.box) > iouThreshold
-            );
+            }
         }
-        
-        Log.d(TAG, "After NMS: " + result.size() + " detections");
-        return result;
+
+        Log.d(TAG, "After NMS: ${result.size} detections")
+        return result
     }
 
     /**
      * Calculate Intersection over Union between two boxes
      */
-    private float calculateIoU(RectF box1, RectF box2) {
-        float intersectLeft = Math.max(box1.left, box2.left);
-        float intersectTop = Math.max(box1.top, box2.top);
-        float intersectRight = Math.min(box1.right, box2.right);
-        float intersectBottom = Math.min(box1.bottom, box2.bottom);
-        
-        float intersectWidth = Math.max(0, intersectRight - intersectLeft);
-        float intersectHeight = Math.max(0, intersectBottom - intersectTop);
-        float intersectArea = intersectWidth * intersectHeight;
-        
-        float box1Area = (box1.right - box1.left) * (box1.bottom - box1.top);
-        float box2Area = (box2.right - box2.left) * (box2.bottom - box2.top);
-        float unionArea = box1Area + box2Area - intersectArea;
-        
-        return intersectArea / unionArea;
+    private fun calculateIoU(box1: RectF, box2: RectF): Float {
+        val intersectLeft = maxOf(box1.left, box2.left)
+        val intersectTop = maxOf(box1.top, box2.top)
+        val intersectRight = minOf(box1.right, box2.right)
+        val intersectBottom = minOf(box1.bottom, box2.bottom)
+
+        val intersectWidth = maxOf(0f, intersectRight - intersectLeft)
+        val intersectHeight = maxOf(0f, intersectBottom - intersectTop)
+        val intersectArea = intersectWidth * intersectHeight
+
+        val box1Area = (box1.right - box1.left) * (box1.bottom - box1.top)
+        val box2Area = (box2.right - box2.left) * (box2.bottom - box2.top)
+        val unionArea = box1Area + box2Area - intersectArea
+
+        return intersectArea / unionArea
     }
 
-    public void setConfidenceThreshold(float threshold) {
-        this.confidenceThreshold = threshold;
-        Log.d(TAG, "Confidence threshold set to: " + threshold);
+    fun setConfidenceThreshold(threshold: Float) {
+        confidenceThreshold = threshold
+        Log.d(TAG, "Confidence threshold set to: $threshold")
     }
 
-    public void setIouThreshold(float threshold) {
-        this.iouThreshold = threshold;
-        Log.d(TAG, "IoU threshold set to: " + threshold);
+    fun setIouThreshold(threshold: Float) {
+        iouThreshold = threshold
+        Log.d(TAG, "IoU threshold set to: $threshold")
     }
 
-    public void close() {
+    fun close() {
         // Clean up resources if needed
-        Log.d(TAG, "Detector closed");
+        Log.d(TAG, "Detector closed")
     }
 }
 ```
 
 ---
 
-## File 7: OverlayView.java
+## File 7: OverlayView.kt
 
-**File Path:** `app/src/main/java/com/yourname/bisindodetector/OverlayView.java`
+**File Path:** `app/src/main/java/com/yourname/bisindodetector/OverlayView.kt`
 
-```java
-package com.example.bisindodetector;
+```kt
+package com.example.bisindodetector
 
-import android.content.Context;
-import android.graphics.Canvas;
-import android.graphics.Color;
-import android.graphics.Paint;
-import android.graphics.RectF;
-import android.util.AttributeSet;
-import android.view.View;
+import android.content.Context
+import android.graphics.Canvas
+import android.graphics.Color
+import android.graphics.Paint
+import android.graphics.RectF
+import android.util.AttributeSet
+import android.view.View
 
-import java.util.ArrayList;
-import java.util.List;
+class OverlayView @JvmOverloads constructor(
+    context: Context,
+    attrs: AttributeSet? = null,
+    defStyleAttr: Int = 0
+) : View(context, attrs, defStyleAttr) {
 
-public class OverlayView extends View {
-    // UBAH BARIS INI
-    private List<YoloDetector.Detection> detections = new ArrayList<>();
-    private Paint boxPaint;
-    private Paint textPaint;
-    private Paint backgroundPaint;
-    private Paint fillPaint;
-
-    private boolean flashEffect = false;
-    private long flashStartTime = 0;
-    private static final long FLASH_DURATION = 300; // ms
-
-    public OverlayView(Context context, AttributeSet attrs) {
-        super(context, attrs);
-        initPaints();
+    companion object {
+        private const val FLASH_DURATION = 300L // ms
     }
 
-    private void initPaints() {
+    private var detections: List<YoloDetector.Detection> = emptyList()
+    private val boxPaint: Paint
+    private val textPaint: Paint
+    private val backgroundPaint: Paint
+    private val fillPaint: Paint
+
+    private var flashEffect = false
+    private var flashStartTime = 0L
+
+    init {
         // Bounding box paint
-        boxPaint = new Paint();
-        boxPaint.setColor(Color.GREEN);
-        boxPaint.setStyle(Paint.Style.STROKE);
-        boxPaint.setStrokeWidth(6f);
-        boxPaint.setAntiAlias(true);
+        boxPaint = Paint().apply {
+            color = Color.GREEN
+            style = Paint.Style.STROKE
+            strokeWidth = 6f
+            isAntiAlias = true
+        }
 
         // Text paint
-        textPaint = new Paint();
-        textPaint.setColor(Color.WHITE);
-        textPaint.setTextSize(48f);
-        textPaint.setStyle(Paint.Style.FILL);
-        textPaint.setAntiAlias(true);
-        textPaint.setFakeBoldText(true);
+        textPaint = Paint().apply {
+            color = Color.WHITE
+            textSize = 48f
+            style = Paint.Style.FILL
+            isAntiAlias = true
+            isFakeBoldText = true
+        }
 
         // Background for text
-        backgroundPaint = new Paint();
-        backgroundPaint.setColor(Color.GREEN);
-        backgroundPaint.setStyle(Paint.Style.FILL);
-        backgroundPaint.setAntiAlias(true);
+        backgroundPaint = Paint().apply {
+            color = Color.GREEN
+            style = Paint.Style.FILL
+            isAntiAlias = true
+        }
 
         // Semi-transparent fill for boxes
-        fillPaint = new Paint();
-        fillPaint.setColor(Color.argb(30, 0, 255, 0)); // Transparent green
-        fillPaint.setStyle(Paint.Style.FILL);
-        fillPaint.setAntiAlias(true);
+        fillPaint = Paint().apply {
+            color = Color.argb(30, 0, 255, 0)
+            style = Paint.Style.FILL
+            isAntiAlias = true
+        }
     }
 
-    // UBAH BARIS INI JUGA
-    public void setDetections(List<YoloDetector.Detection> detections) {
-        this.detections = detections;
-        invalidate(); // Redraw
+    fun setDetections(detections: List<YoloDetector.Detection>) {
+        this.detections = detections
+        invalidate() // Redraw
     }
 
-    public void flashGreen() {
-        flashEffect = true;
-        flashStartTime = System.currentTimeMillis();
-        invalidate();
+    fun flashGreen() {
+        flashEffect = true
+        flashStartTime = System.currentTimeMillis()
+        invalidate()
     }
 
-    @Override
-    protected void onDraw(Canvas canvas) {
-        super.onDraw(canvas);
+    override fun onDraw(canvas: Canvas) {
+        super.onDraw(canvas)
 
         // Draw flash effect if active
         if (flashEffect) {
-            long elapsed = System.currentTimeMillis() - flashStartTime;
+            val elapsed = System.currentTimeMillis() - flashStartTime
             if (elapsed < FLASH_DURATION) {
                 // Fade out effect
-                int alpha = (int) (255 * (1 - (float) elapsed / FLASH_DURATION));
-                Paint flashPaint = new Paint();
-                flashPaint.setColor(Color.argb(alpha / 2, 0, 255, 0));
-                canvas.drawRect(0, 0, getWidth(), getHeight(), flashPaint);
-                invalidate(); // Continue animation
+                val alpha = (255 * (1 - elapsed.toFloat() / FLASH_DURATION)).toInt()
+                val flashPaint = Paint().apply {
+                    color = Color.argb(alpha / 2, 0, 255, 0)
+                }
+                canvas.drawRect(0f, 0f, width.toFloat(), height.toFloat(), flashPaint)
+                invalidate() // Continue animation
             } else {
-                flashEffect = false;
+                flashEffect = false
             }
         }
 
         // Draw all detections
-        // Baris ini sekarang akan berfungsi tanpa error
-        for (YoloDetector.Detection detection : detections) {
+        for (detection in detections) {
             // Draw semi-transparent fill
-            canvas.drawRect(detection.box, fillPaint);
+            canvas.drawRect(detection.box, fillPaint)
 
             // Draw bounding box
-            canvas.drawRect(detection.box, boxPaint);
+            canvas.drawRect(detection.box, boxPaint)
 
             // Prepare label text
-            String labelText = detection.label + " " +
-                    String.format("%.0f%%", detection.confidence * 100);
+            val labelText = "${detection.label} ${String.format("%.0f%%", detection.confidence * 100)}"
 
             // Measure text dimensions
-            float textWidth = textPaint.measureText(labelText);
-            float textHeight = textPaint.getTextSize();
+            val textWidth = textPaint.measureText(labelText)
+            val textHeight = textPaint.textSize
 
             // Draw background rectangle for text
-            float padding = 10f;
-            RectF textBackground = new RectF(
-                    detection.box.left,
-                    detection.box.top - textHeight - padding * 2,
-                    detection.box.left + textWidth + padding * 2,
-                    detection.box.top
-            );
+            val padding = 10f
+            val textBackground = RectF(
+                detection.box.left,
+                detection.box.top - textHeight - padding * 2,
+                detection.box.left + textWidth + padding * 2,
+                detection.box.top
+            )
 
             // Make sure text background is within view bounds
             if (textBackground.top < 0) {
-                textBackground.offset(0, -textBackground.top + detection.box.top + 5);
+                textBackground.offset(0f, -textBackground.top + detection.box.top + 5)
             }
 
-            canvas.drawRect(textBackground, backgroundPaint);
+            canvas.drawRect(textBackground, backgroundPaint)
 
             // Draw text
             canvas.drawText(
-                    labelText,
-                    textBackground.left + padding,
-                    textBackground.bottom - padding,
-                    textPaint
-            );
+                labelText,
+                textBackground.left + padding,
+                textBackground.bottom - padding,
+                textPaint
+            )
         }
     }
 }
-
 ```
 
 ---
@@ -984,7 +972,6 @@ public class OverlayView extends View {
         app:layout_constraintEnd_toEndOf="parent"
         app:layout_constraintTop_toTopOf="parent" />
 
-    <!-- Bottom Panel -->
     <LinearLayout
         android:id="@+id/bottomPanel"
         android:layout_width="0dp"
@@ -1040,12 +1027,18 @@ public class OverlayView extends View {
 **File Path:** `app/src/main/res/values/strings.xml`
 
 ```xml
-
-    BiSindo Detector
-    Camera permission is required for sign language detection
-    Failed to load detection model
-    Camera initialization failed
-
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">BiSindo Detector</string>
+    <string name="camera_permission_required">Camera permission is required for sign language detection</string>
+    <string name="model_load_failed">Failed to load detection model</string>
+    <string name="camera_init_failed">Camera initialization failed</string>
+    <string name="detected_prefix">Detected: </string>
+    <string name="fps_format">FPS: %d</string>
+    <string name="clear_button">Clear</string>
+    <string name="space_button">Space</string>
+    <string name="backspace_button">⌫</string>
+</resources>
 ```
 
 ---
@@ -1055,146 +1048,76 @@ public class OverlayView extends View {
 **File Path:** `app/src/main/res/values/colors.xml`
 
 ```xml
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <color name="black">#FF000000</color>
+    <color name="white">#FFFFFFFF</color>
+    <color name="green">#FF00FF00</color>
+    <color name="red">#FFFF0000</color>
+    <color name="semi_transparent_black">#80000000</color>
+    <color name="semi_transparent_green">#8000FF00</color>
+    
+    <!-- Material Design Colors -->
+    <color name="purple_200">#FFBB86FC</color>
+    <color name="purple_500">#FF6200EE</color>
+    <color name="purple_700">#FF3700B3</color>
+    <color name="teal_200">#FF03DAC5</color>
+    <color name="teal_700">#FF018786</color>
+</resources>
+```
+## gradle/libs.version.toml
+```toml
+[versions]
+agp = "8.2.0"
+kotlin = "1.9.20"
+coreKtx = "1.12.0"
+junit = "4.13.2"
+junitVersion = "1.1.5"
+espressoCore = "3.5.1"
+appcompat = "1.6.1"
+material = "1.11.0"
+constraintlayout = "2.1.4"
+camerax = "1.3.1"
+pytorch = "2.1.0"
+coroutines = "1.7.3"
 
+[libraries]
+core-ktx = { group = "androidx.core", name = "core-ktx", version.ref = "coreKtx" }
+junit = { group = "junit", name = "junit", version.ref = "junit" }
+ext-junit = { group = "androidx.test.ext", name = "junit", version.ref = "junitVersion" }
+espresso-core = { group = "androidx.test.espresso", name = "espresso-core", version.ref = "espressoCore" }
+appcompat = { group = "androidx.appcompat", name = "appcompat", version.ref = "appcompat" }
+material = { group = "com.google.android.material", name = "material", version.ref = "material" }
+constraintlayout = { group = "androidx.constraintlayout", name = "constraintlayout", version.ref = "constraintlayout" }
 
-    #FF000000
-    #FFFFFFFF
-    #FF00FF00
-    #FFFF0000
-    #80000000
-    #8000FF00
-
+[plugins]
+android-application = { id = "com.android.application", version.ref = "agp" }
+jetbrains-kotlin-android = { id = "org.jetbrains.kotlin.android", version.ref = "kotlin" }
 ```
 
----
+## Proguard.rules.pro
+```pro
+# Add project specific ProGuard rules here.
+# You can control the set of applied configuration files using the
+# proguardFiles setting in build.gradle.
 
-## Setup Instructions
+# PyTorch
+-keep class org.pytorch.** { *; }
+-keep class com.facebook.jni.** { *; }
 
-### Step 1: Create New Project in Android Studio
-1. Open Android Studio
-2. Click "New Project"
-3. Select "Empty Activity"
-4. Set:
-   - Name: `BiSindo Detector`
-   - Package name: `com.yourname.bisindodetector`
-   - Language: `Java`
-   - Minimum SDK: `API 24: Android 7.0 (Nougat)`
+# Keep model classes
+-keep class com.example.bisindodetector.YoloDetector { *; }
+-keep class com.example.bisindodetector.YoloDetector$Detection { *; }
 
-### Step 2: Add Your Model File
-1. In Android Studio, switch to **Project** view (top-left dropdown)
-2. Navigate to `app/src/main/`
-3. Right-click on `main` → New → Directory → Name it `assets`
-4. Copy your `bisindo_model_416.torchscript` file into the `assets` folder
-
-### Step 3: Update Package Name
-Replace all occurrences of `com.yourname.bisindodetector` with your actual package name throughout all files.
-
-### Step 4: Update Class Labels
-In `YoloDetector.java`, update the `labels` array to match your trained model's classes:
-
-```java
-private String[] labels = {
-    // Replace with your actual BiSindo letter classes in the correct order
-    "A", "B", "C", "D", "E", "F", "G", "H", "I", "J", 
-    "K", "L", "M", "N", "O", "P", "Q", "R", "S", "T", 
-    "U", "V", "W", "X", "Y", "Z"
-};
+# CameraX
+-keep class androidx.camera.** { *; }
 ```
 
-### Step 5: Sync Gradle
-1. Click "Sync Now" when prompted
-2. Wait for Gradle to download dependencies
-
-### Step 6: Build and Run
-1. Connect your Android device or start an emulator
-2. Click the green "Run" button
-3. Select your device
-4. Grant camera permission when prompted
-
----
-
-## Troubleshooting
-
-### Model Not Found
-**Error:** `FileNotFoundException: bisindo_model_416.torchscript`
-**Solution:** Make sure the model file is in `app/src/main/assets/`
-
-### Camera Permission Denied
-**Solution:** Go to Settings → Apps → BiSindo Detector → Permissions → Enable Camera
-
-### Low FPS / Lag
-**Solutions:**
-- Use a physical device instead of emulator
-- Reduce model size to 320: Change `416` to `320` in MainActivity
-- Lower confidence threshold: `detector.setConfidenceThreshold(0.3f);`
-
-### Wrong Detections
-**Solutions:**
-- Check if labels array matches your model's training order
-- Adjust confidence threshold: Try 0.3 - 0.6
-- Ensure good lighting conditions
-- Hold hand steady and clear in frame
-
-### App Crashes on Start
-**Solutions:**
-- Check Logcat for error messages
-- Verify model file is not corrupted
-- Ensure minimum SDK is 24 or higher
-- Check if PyTorch dependencies are correctly added
-
----
-
-## Features
-
-✅ Real-time BiSindo sign language detection  
-✅ Front camera with mirrored view  
-✅ FPS counter for performance monitoring  
-✅ Hold letter for 1.5 seconds to add to word  
-✅ Clear button to reset detected text  
-✅ Visual feedback (green flash) when letter is added  
-✅ Bounding boxes with confidence scores  
-✅ Optimized for 416x416 input size  
-
----
-
-## Customization Options
-
-### Change Hold Duration
-In `MainActivity.java`:
-```java
-private long letterHoldTime = 1500; // Change to 1000 for 1 second, 2000 for 2 seconds
+## gradle.properties
+```properties
+# Project-wide Gradle settings.
+org.gradle.jvmargs=-Xmx2048m -Dfile.encoding=UTF-8
+android.useAndroidX=true
+android.enableJetifier=true
+kotlin.code.style=official
 ```
-
-### Change Confidence Threshold
-In `MainActivity.onCreate()`:
-```java
-detector.setConfidenceThreshold(0.5f); // Try 0.3 to 0.7
-```
-
-### Add Space Button
-Add this to `activity_main.xml` in the bottom panel:
-```xml
-
-```
-
-And in `MainActivity.onCreate()`:
-```java
-Button spaceButton = findViewById(R.id.spaceButton);
-spaceButton.setOnClickListener(v -> {
-    detectedWord.append(" ");
-    detectedTextView.setText("Detected: " + detectedWord.toString());
-});
-```
-
----
-
-## Next Steps
-
-1. Test with different lighting conditions
-2. Test from various distances
-3. Fine-tune confidence and IoU thresholds
-4. Add backspace functionality
-5. Add text-to-speech for detected words
-6. Save detected words to a file
-
-Good luck with your BiSindo detector app! 🚀

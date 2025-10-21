@@ -30,29 +30,16 @@ BiSindoDetector/
 
 ## File 1: build.gradle (Project level)
 
-**File Path:** `build.gradle`
+**File Path:** `build.gradle.kts`
 
 ```gradle
-// Top-level build file
-buildscript {
-    repositories {
-        google()
-        mavenCentral()
-    }
-    dependencies {
-        classpath 'com.android.tools.build:gradle:8.1.0'
-    }
+// Top-level build file where you can add configuration options common to all sub-projects/modules.
+plugins {
+    id("com.android.application") version "8.12.3" apply false
 }
 
-allprojects {
-    repositories {
-        google()
-        mavenCentral()
-    }
-}
-
-task clean(type: Delete) {
-    delete rootProject.buildDir
+tasks.register("clean", Delete::class){
+    delete(rootProject.layout.buildDirectory)
 }
 ```
 
@@ -70,6 +57,7 @@ pluginManagement {
         gradlePluginPortal()
     }
 }
+
 dependencyResolutionManagement {
     repositoriesMode.set(RepositoriesMode.FAIL_ON_PROJECT_REPOS)
     repositories {
@@ -79,71 +67,82 @@ dependencyResolutionManagement {
 }
 
 rootProject.name = "BiSindo Detector"
-include ':app'
+include(":app")
 ```
 
 ---
 
 ## File 3: build.gradle (Module: app)
 
-**File Path:** `app/build.gradle`
+**File Path:** `app/build.gradle.kts(module: app)`
 
 ```gradle
 plugins {
-    id 'com.android.application'
+    id("com.android.application")
 }
 
 android {
-    namespace 'com.yourname.bisindodetector'
-    compileSdk 34
+    namespace = "com.example.bisindodetector"
+    compileSdk = 36
 
     defaultConfig {
-        applicationId "com.yourname.bisindodetector"
-        minSdk 24
-        targetSdk 34
-        versionCode 1
-        versionName "1.0"
+        applicationId = "com.example.bisindodetector"
+        minSdk = 24
+        targetSdk = 34
+        versionCode = 1
+        versionName = "1.0"
 
-        testInstrumentationRunner "androidx.test.runner.AndroidJUnitRunner"
-        
+        testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
+
         // Don't compress model file
-        aaptOptions {
-            noCompress "torchscript"
+        packaging {
+            resources {
+                excludes += listOf("META-INF/NOTICE.md", "META-INF/LICENSE.md")
+            }
         }
     }
 
     buildTypes {
         release {
-            minifyEnabled false
-            proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'), 'proguard-rules.pro'
+            isMinifyEnabled = false
+            proguardFiles(
+                getDefaultProguardFile("proguard-android-optimize.txt"),
+                "proguard-rules.pro"
+            )
         }
     }
-    
+
     compileOptions {
-        sourceCompatibility JavaVersion.VERSION_1_8
-        targetCompatibility JavaVersion.VERSION_1_8
+        sourceCompatibility = JavaVersion.VERSION_1_8
+        targetCompatibility = JavaVersion.VERSION_1_8
+    }
+
+    // Prevent compression of torchscript files
+    androidResources {
+        noCompress += "torchscript"
     }
 }
 
 dependencies {
-    implementation 'androidx.appcompat:appcompat:1.6.1'
-    implementation 'com.google.android.material:material:1.11.0'
-    implementation 'androidx.constraintlayout:constraintlayout:2.1.4'
-    
+    implementation(libs.appcompat)
+    implementation(libs.material)
+    implementation(libs.constraintlayout)
+
     // CameraX dependencies
-    implementation 'androidx.camera:camera-camera2:1.3.1'
-    implementation 'androidx.camera:camera-lifecycle:1.3.1'
-    implementation 'androidx.camera:camera-view:1.3.1'
-    
+    implementation("androidx.camera:camera-camera2:1.5.1")
+    implementation("androidx.camera:camera-lifecycle:1.5.1")
+    implementation("androidx.camera:camera-view:1.5.1")
+
     // PyTorch Mobile
-    implementation 'org.pytorch:pytorch_android_lite:1.13.1'
-    implementation 'org.pytorch:pytorch_android_torchvision_lite:1.13.1'
-    
+    implementation("org.pytorch:pytorch_android_lite:2.1.0")
+    implementation("org.pytorch:pytorch_android_torchvision_lite:2.1.0")
+
     // Testing
-    testImplementation 'junit:junit:4.13.2'
-    androidTestImplementation 'androidx.test.ext:junit:1.1.5'
-    androidTestImplementation 'androidx.test.espresso:espresso-core:3.5.1'
+    testImplementation(libs.junit)
+    androidTestImplementation(libs.ext.junit)
+    androidTestImplementation(libs.espresso.core)
 }
+
 ```
 
 ---
@@ -153,26 +152,42 @@ dependencies {
 **File Path:** `app/src/main/AndroidManifest.xml`
 
 ```xml
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools">
 
+    <!-- Camera permission -->
+    <uses-permission android:name="android.permission.CAMERA" />
 
+    <!-- Camera feature -->
+    <uses-feature
+        android:name="android.hardware.camera"
+        android:required="true" />
+    <uses-feature
+        android:name="android.hardware.camera.front"
+        android:required="false" />
 
-    
-    
-    
-    
-    
+    <application
+        android:allowBackup="true"
+        android:icon="@mipmap/ic_launcher"
+        android:label="@string/app_name"
+        android:roundIcon="@mipmap/ic_launcher_round"
+        android:supportsRtl="true"
+        android:theme="@style/Theme.AppCompat.Light.NoActionBar"
+        tools:targetApi="31">
 
-    
-        
-        
-            
-                
-                
-            
-        
-    
+        <activity
+            android:name=".MainActivity"
+            android:exported="true"
+            android:screenOrientation="portrait">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>
+    </application>
 
-
+</manifest>
 ```
 
 ---
@@ -182,9 +197,10 @@ dependencies {
 **File Path:** `app/src/main/java/com/yourname/bisindodetector/MainActivity.java`
 
 ```java
-package com.yourname.bisindodetector;
+package com.example.bisindodetector;
 
 import androidx.annotation.NonNull;
+import androidx.annotation.OptIn;
 import androidx.appcompat.app.AppCompatActivity;
 import androidx.camera.core.*;
 import androidx.camera.lifecycle.ProcessCameraProvider;
@@ -220,24 +236,24 @@ import java.util.concurrent.Executors;
 public class MainActivity extends AppCompatActivity {
     private static final String TAG = "BiSindoDetector";
     private static final int PERMISSION_REQUEST_CODE = 100;
-    
+
     // UI Components
     private PreviewView previewView;
     private OverlayView overlayView;
     private TextView detectedTextView;
     private TextView fpsTextView;
     private Button clearButton;
-    
+
     // Detection
     private YoloDetector detector;
     private ExecutorService cameraExecutor;
-    
+
     // Word building logic
     private String lastDetectedLetter = "";
     private long lastDetectionTime = 0;
     private long letterHoldTime = 1500; // Hold letter for 1.5 seconds to add
     private StringBuilder detectedWord = new StringBuilder();
-    
+
     // FPS calculation
     private long frameCount = 0;
     private long lastFpsTime = System.currentTimeMillis();
@@ -247,14 +263,14 @@ public class MainActivity extends AppCompatActivity {
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
         setContentView(R.layout.activity_main);
-        
+
         // Initialize UI components
         previewView = findViewById(R.id.previewView);
         overlayView = findViewById(R.id.overlayView);
         detectedTextView = findViewById(R.id.detectedText);
         fpsTextView = findViewById(R.id.fpsText);
         clearButton = findViewById(R.id.clearButton);
-        
+
         // Clear button click listener
         clearButton.setOnClickListener(v -> {
             detectedWord.setLength(0);
@@ -262,10 +278,10 @@ public class MainActivity extends AppCompatActivity {
             lastDetectedLetter = "";
             Toast.makeText(this, "Cleared!", Toast.LENGTH_SHORT).show();
         });
-        
+
         // Initialize camera executor
         cameraExecutor = Executors.newSingleThreadExecutor();
-        
+
         // Load YOLO detector
         try {
             detector = new YoloDetector(this, "bisindo_model_416.torchscript", 416);
@@ -273,12 +289,12 @@ public class MainActivity extends AppCompatActivity {
             Toast.makeText(this, "Model loaded successfully", Toast.LENGTH_SHORT).show();
         } catch (IOException e) {
             Log.e(TAG, "Error loading model", e);
-            Toast.makeText(this, "Error loading model: " + e.getMessage(), 
-                         Toast.LENGTH_LONG).show();
+            Toast.makeText(this, "Error loading model: " + e.getMessage(),
+                    Toast.LENGTH_LONG).show();
             finish();
             return;
         }
-        
+
         // Check and request camera permission
         if (checkPermissions()) {
             startCamera();
@@ -288,37 +304,37 @@ public class MainActivity extends AppCompatActivity {
     }
 
     private boolean checkPermissions() {
-        return ContextCompat.checkSelfPermission(this, Manifest.permission.CAMERA) 
-               == PackageManager.PERMISSION_GRANTED;
+        return ContextCompat.checkSelfPermission(this, Manifest.permission.CAMERA)
+                == PackageManager.PERMISSION_GRANTED;
     }
 
     private void requestPermissions() {
-        ActivityCompat.requestPermissions(this, 
-            new String[]{Manifest.permission.CAMERA}, 
-            PERMISSION_REQUEST_CODE);
+        ActivityCompat.requestPermissions(this,
+                new String[]{Manifest.permission.CAMERA},
+                PERMISSION_REQUEST_CODE);
     }
 
     @Override
-    public void onRequestPermissionsResult(int requestCode, @NonNull String[] permissions, 
-                                          @NonNull int[] grantResults) {
+    public void onRequestPermissionsResult(int requestCode, @NonNull String[] permissions,
+                                           @NonNull int[] grantResults) {
         super.onRequestPermissionsResult(requestCode, permissions, grantResults);
         if (requestCode == PERMISSION_REQUEST_CODE) {
             if (grantResults.length > 0 && grantResults[0] == PackageManager.PERMISSION_GRANTED) {
                 startCamera();
             } else {
-                Toast.makeText(this, "Camera permission is required", 
-                             Toast.LENGTH_LONG).show();
+                Toast.makeText(this, "Camera permission is required",
+                        Toast.LENGTH_LONG).show();
                 finish();
             }
         }
     }
 
     private void startCamera() {
-        ListenableFuture cameraProviderFuture = 
-            ProcessCameraProvider.getInstance(this);
-        
+        ListenableFuture<ProcessCameraProvider> cameraProviderFuture = ProcessCameraProvider.getInstance(this); // Specify the generic type here
+
         cameraProviderFuture.addListener(() -> {
             try {
+                // Now the compiler knows .get() will return a ProcessCameraProvider
                 ProcessCameraProvider cameraProvider = cameraProviderFuture.get();
                 bindCameraUseCases(cameraProvider);
             } catch (ExecutionException | InterruptedException e) {
@@ -326,39 +342,40 @@ public class MainActivity extends AppCompatActivity {
                 Toast.makeText(this, "Error starting camera", Toast.LENGTH_SHORT).show();
             }
         }, ContextCompat.getMainExecutor(this));
-    }
+        }
 
-    private void bindCameraUseCases(ProcessCameraProvider cameraProvider) {
+
+    @OptIn(markerClass = ExperimentalGetImage.class) private void bindCameraUseCases(ProcessCameraProvider cameraProvider) {
         // Preview use case
         Preview preview = new Preview.Builder()
-            .build();
+                .build();
         preview.setSurfaceProvider(previewView.getSurfaceProvider());
-        
+
         // Image analysis use case
         ImageAnalysis imageAnalysis = new ImageAnalysis.Builder()
-            .setBackpressureStrategy(ImageAnalysis.STRATEGY_KEEP_ONLY_LATEST)
-            .setOutputImageFormat(ImageAnalysis.OUTPUT_IMAGE_FORMAT_YUV_420_888)
-            .build();
-        
+                .setBackpressureStrategy(ImageAnalysis.STRATEGY_KEEP_ONLY_LATEST)
+                .setOutputImageFormat(ImageAnalysis.OUTPUT_IMAGE_FORMAT_YUV_420_888)
+                .build();
+
         imageAnalysis.setAnalyzer(cameraExecutor, this::analyzeImage);
-        
+
         // Select front camera
         CameraSelector cameraSelector = new CameraSelector.Builder()
-            .requireLensFacing(CameraSelector.LENS_FACING_FRONT)
-            .build();
-        
+                .requireLensFacing(CameraSelector.LENS_FACING_FRONT)
+                .build();
+
         try {
             // Unbind all use cases before rebinding
             cameraProvider.unbindAll();
-            
+
             // Bind use cases to camera
             cameraProvider.bindToLifecycle(
-                this, 
-                cameraSelector, 
-                preview, 
-                imageAnalysis
+                    this,
+                    cameraSelector,
+                    preview,
+                    imageAnalysis
             );
-            
+
             Log.d(TAG, "Camera use cases bound successfully");
         } catch (Exception e) {
             Log.e(TAG, "Use case binding failed", e);
@@ -375,28 +392,29 @@ public class MainActivity extends AppCompatActivity {
             currentFps = (int) frameCount;
             frameCount = 0;
             lastFpsTime = currentTime;
-            
+
             runOnUiThread(() -> fpsTextView.setText("FPS: " + currentFps));
         }
-        
+
         // Convert ImageProxy to Bitmap
         Bitmap bitmap = imageProxyToBitmap(imageProxy);
         if (bitmap == null) {
             imageProxy.close();
             return;
         }
-        
+// ...
         // Run detection
-        List detections = detector.detect(bitmap);
-        
+        List<YoloDetector.Detection> detections = detector.detect(bitmap); // <- Tambahkan tipe generik
+
         // Update UI on main thread
         runOnUiThread(() -> {
             // Update overlay with bounding boxes
             overlayView.setDetections(detections);
-            
+
             // Process detections for word building
             if (!detections.isEmpty()) {
                 // Get the detection with highest confidence
+                // Kode ini sekarang akan berfungsi dengan baik
                 YoloDetector.Detection bestDetection = detections.get(0);
                 processDetection(bestDetection);
             } else {
@@ -404,7 +422,7 @@ public class MainActivity extends AppCompatActivity {
                 lastDetectedLetter = "";
             }
         });
-        
+
         // Clean up
         imageProxy.close();
     }
@@ -412,22 +430,22 @@ public class MainActivity extends AppCompatActivity {
     private void processDetection(YoloDetector.Detection detection) {
         long currentTime = System.currentTimeMillis();
         String detectedLetter = detection.label;
-        
+
         if (detectedLetter.equals(lastDetectedLetter)) {
             // Same letter detected - check if held long enough
             long holdDuration = currentTime - lastDetectionTime;
-            
+
             if (holdDuration >= letterHoldTime) {
                 // Add letter to word
                 detectedWord.append(detectedLetter);
                 detectedTextView.setText("Detected: " + detectedWord.toString());
-                
+
                 // Reset detection to avoid repeated additions
                 lastDetectionTime = currentTime;
-                
+
                 // Visual feedback
                 overlayView.flashGreen();
-                
+
                 Log.d(TAG, "Added letter: " + detectedLetter + " | Word: " + detectedWord);
             }
         } else {
@@ -441,38 +459,38 @@ public class MainActivity extends AppCompatActivity {
     private Bitmap imageProxyToBitmap(ImageProxy imageProxy) {
         Image image = imageProxy.getImage();
         if (image == null) return null;
-        
+
         try {
             // Get image planes
             ByteBuffer yBuffer = image.getPlanes()[0].getBuffer();
             ByteBuffer uBuffer = image.getPlanes()[1].getBuffer();
             ByteBuffer vBuffer = image.getPlanes()[2].getBuffer();
-            
+
             int ySize = yBuffer.remaining();
             int uSize = uBuffer.remaining();
             int vSize = vBuffer.remaining();
-            
+
             // Convert to NV21 format
             byte[] nv21 = new byte[ySize + uSize + vSize];
             yBuffer.get(nv21, 0, ySize);
             vBuffer.get(nv21, ySize, vSize);
             uBuffer.get(nv21, ySize + vSize, uSize);
-            
+
             // Convert NV21 to JPEG
-            YuvImage yuvImage = new YuvImage(nv21, android.graphics.ImageFormat.NV21, 
-                                            imageProxy.getWidth(), imageProxy.getHeight(), null);
+            YuvImage yuvImage = new YuvImage(nv21, android.graphics.ImageFormat.NV21,
+                    imageProxy.getWidth(), imageProxy.getHeight(), null);
             ByteArrayOutputStream out = new ByteArrayOutputStream();
-            yuvImage.compressToJpeg(new Rect(0, 0, imageProxy.getWidth(), 
-                                   imageProxy.getHeight()), 100, out);
-            
+            yuvImage.compressToJpeg(new Rect(0, 0, imageProxy.getWidth(),
+                    imageProxy.getHeight()), 100, out);
+
             byte[] imageBytes = out.toByteArray();
             Bitmap bitmap = BitmapFactory.decodeByteArray(imageBytes, 0, imageBytes.length);
-            
+
             // Mirror the image for front camera (so it looks natural)
             Matrix matrix = new Matrix();
             matrix.preScale(-1.0f, 1.0f);
-            return Bitmap.createBitmap(bitmap, 0, 0, bitmap.getWidth(), 
-                                     bitmap.getHeight(), matrix, false);
+            return Bitmap.createBitmap(bitmap, 0, 0, bitmap.getWidth(),
+                    bitmap.getHeight(), matrix, false);
         } catch (Exception e) {
             Log.e(TAG, "Error converting ImageProxy to Bitmap", e);
             return null;
@@ -780,7 +798,7 @@ public class YoloDetector {
 **File Path:** `app/src/main/java/com/yourname/bisindodetector/OverlayView.java`
 
 ```java
-package com.yourname.bisindodetector;
+package com.example.bisindodetector;
 
 import android.content.Context;
 import android.graphics.Canvas;
@@ -794,12 +812,13 @@ import java.util.ArrayList;
 import java.util.List;
 
 public class OverlayView extends View {
-    private List detections = new ArrayList<>();
+    // UBAH BARIS INI
+    private List<YoloDetector.Detection> detections = new ArrayList<>();
     private Paint boxPaint;
     private Paint textPaint;
     private Paint backgroundPaint;
     private Paint fillPaint;
-    
+
     private boolean flashEffect = false;
     private long flashStartTime = 0;
     private static final long FLASH_DURATION = 300; // ms
@@ -816,7 +835,7 @@ public class OverlayView extends View {
         boxPaint.setStyle(Paint.Style.STROKE);
         boxPaint.setStrokeWidth(6f);
         boxPaint.setAntiAlias(true);
-        
+
         // Text paint
         textPaint = new Paint();
         textPaint.setColor(Color.WHITE);
@@ -824,13 +843,13 @@ public class OverlayView extends View {
         textPaint.setStyle(Paint.Style.FILL);
         textPaint.setAntiAlias(true);
         textPaint.setFakeBoldText(true);
-        
+
         // Background for text
         backgroundPaint = new Paint();
         backgroundPaint.setColor(Color.GREEN);
         backgroundPaint.setStyle(Paint.Style.FILL);
         backgroundPaint.setAntiAlias(true);
-        
+
         // Semi-transparent fill for boxes
         fillPaint = new Paint();
         fillPaint.setColor(Color.argb(30, 0, 255, 0)); // Transparent green
@@ -838,11 +857,12 @@ public class OverlayView extends View {
         fillPaint.setAntiAlias(true);
     }
 
-    public void setDetections(List detections) {
+    // UBAH BARIS INI JUGA
+    public void setDetections(List<YoloDetector.Detection> detections) {
         this.detections = detections;
         invalidate(); // Redraw
     }
-    
+
     public void flashGreen() {
         flashEffect = true;
         flashStartTime = System.currentTimeMillis();
@@ -852,7 +872,7 @@ public class OverlayView extends View {
     @Override
     protected void onDraw(Canvas canvas) {
         super.onDraw(canvas);
-        
+
         // Draw flash effect if active
         if (flashEffect) {
             long elapsed = System.currentTimeMillis() - flashStartTime;
@@ -867,49 +887,51 @@ public class OverlayView extends View {
                 flashEffect = false;
             }
         }
-        
+
         // Draw all detections
+        // Baris ini sekarang akan berfungsi tanpa error
         for (YoloDetector.Detection detection : detections) {
             // Draw semi-transparent fill
             canvas.drawRect(detection.box, fillPaint);
-            
+
             // Draw bounding box
             canvas.drawRect(detection.box, boxPaint);
-            
+
             // Prepare label text
-            String labelText = detection.label + " " + 
-                              String.format("%.0f%%", detection.confidence * 100);
-            
+            String labelText = detection.label + " " +
+                    String.format("%.0f%%", detection.confidence * 100);
+
             // Measure text dimensions
             float textWidth = textPaint.measureText(labelText);
             float textHeight = textPaint.getTextSize();
-            
+
             // Draw background rectangle for text
             float padding = 10f;
             RectF textBackground = new RectF(
-                detection.box.left,
-                detection.box.top - textHeight - padding * 2,
-                detection.box.left + textWidth + padding * 2,
-                detection.box.top
+                    detection.box.left,
+                    detection.box.top - textHeight - padding * 2,
+                    detection.box.left + textWidth + padding * 2,
+                    detection.box.top
             );
-            
+
             // Make sure text background is within view bounds
             if (textBackground.top < 0) {
                 textBackground.offset(0, -textBackground.top + detection.box.top + 5);
             }
-            
+
             canvas.drawRect(textBackground, backgroundPaint);
-            
+
             // Draw text
             canvas.drawText(
-                labelText,
-                textBackground.left + padding,
-                textBackground.bottom - padding,
-                textPaint
+                    labelText,
+                    textBackground.left + padding,
+                    textBackground.bottom - padding,
+                    textPaint
             );
         }
     }
 }
+
 ```
 
 ---
@@ -919,39 +941,96 @@ public class OverlayView extends View {
 **File Path:** `app/src/main/res/layout/activity_main.xml`
 
 ```xml
+<?xml version="1.0" encoding="utf-8"?>
+<androidx.constraintlayout.widget.ConstraintLayout
+    xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:app="http://schemas.android.com/apk/res-auto"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:background="@color/black">
 
+    <!-- Camera Preview -->
+    <androidx.camera.view.PreviewView
+        android:id="@+id/previewView"
+        android:layout_width="0dp"
+        android:layout_height="0dp"
+        app:layout_constraintBottom_toTopOf="@id/bottomPanel"
+        app:layout_constraintEnd_toEndOf="parent"
+        app:layout_constraintStart_toStartOf="parent"
+        app:layout_constraintTop_toTopOf="parent" />
 
+    <!-- Overlay for bounding boxes -->
+    <com.example.bisindodetector.OverlayView
+        android:id="@+id/overlayView"
+        android:layout_width="0dp"
+        android:layout_height="0dp"
+        app:layout_constraintBottom_toBottomOf="@id/previewView"
+        app:layout_constraintEnd_toEndOf="@id/previewView"
+        app:layout_constraintStart_toStartOf="@id/previewView"
+        app:layout_constraintTop_toTopOf="@id/previewView" />
 
-    
-    
+    <!-- FPS Counter -->
+    <TextView
+        android:id="@+id/fpsText"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_margin="16dp"
+        android:background="@color/semi_transparent_black"
+        android:padding="8dp"
+        android:text="FPS: 0"
+        android:textColor="@color/white"
+        android:textSize="16sp"
+        android:textStyle="bold"
+        app:layout_constraintEnd_toEndOf="parent"
+        app:layout_constraintTop_toTopOf="parent" />
 
-    
-    
+    <!-- Bottom Panel -->
+    <LinearLayout
+        android:id="@+id/bottomPanel"
+        android:layout_width="0dp"
+        android:layout_height="wrap_content"
+        android:background="@color/semi_transparent_black"
+        android:orientation="vertical"
+        android:padding="16dp"
+        app:layout_constraintBottom_toBottomOf="parent"
+        app:layout_constraintEnd_toEndOf="parent"
+        app:layout_constraintStart_toStartOf="parent">
 
-    
-    
+        <!-- Detected Text Display -->
+        <TextView
+            android:id="@+id/detectedText"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginBottom="12dp"
+            android:background="@color/white"
+            android:minHeight="60dp"
+            android:padding="12dp"
+            android:text="Detected: "
+            android:textColor="@color/black"
+            android:textSize="20sp"
+            android:textStyle="bold" />
 
-        
-        
+        <!-- Control Buttons -->
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:gravity="center"
+            android:orientation="horizontal">
 
-        
-        
+            <!-- Clear Button -->
+            <Button
+                android:id="@+id/clearButton"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:backgroundTint="@color/red"
+                android:text="Clear"
+                android:textColor="@color/white"
+                android:textStyle="bold" />
 
-        
-        
-    
+        </LinearLayout>
+    </LinearLayout>
 
-    
-    
-
-        
-        
-
-        
-        
-    
-
-
+</androidx.constraintlayout.widget.ConstraintLayout>
 ```
 
 ---

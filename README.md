@@ -1,6 +1,6 @@
 # 🇮🇩 BiSindo Translator 2
 
-**Real-time Indonesian Sign Language (BiSindo) Translator using CameraX + PyTorch + YOLOv5**
+**Real-time Indonesian Sign Language (BiSindo) Translator using CameraX + PyTorch + YOLOv8**
 
 ---
 
@@ -15,14 +15,14 @@ BiSindoTranslator2/
 │       ├── main/
 │       │   ├── AndroidManifest.xml
 │       │   ├── assets/
-│       │   │   └── yolov5s.torchscript.pt
+│       │   │   └── best.torchscript
 │       │   ├── java/
 │       │   │   └── com/
 │       │   │       └── example/
 │       │   │           └── bisindotranslator2/
 │       │   │               ├── MainActivity.kt
 │       │   │               ├── OverlayView.kt
-│       │   │               ├── YoloDetector.kt
+│       │   │               ├── YoloV8Detector.kt
 │       │   │               └── Utils.kt
 │       │   └── res/
 │       │       ├── layout/
@@ -61,11 +61,13 @@ BiSindoTranslator2/
 
 ## 🚀 Features
 
-- ✅ Real-time sign language detection using YOLOv5
+- ✅ Real-time BiSindo sign language detection using YOLOv8
 - ✅ CameraX integration for smooth camera preview
 - ✅ PyTorch Mobile for on-device inference
 - ✅ Custom overlay view for bounding boxes
 - ✅ FPS counter and detection display
+- ✅ NMS (Non-Maximum Suppression) for accurate detections
+- ✅ Support for all 26 BiSindo alphabet letters (A-Z)
 - ✅ Material Design UI
 
 ---
@@ -77,7 +79,7 @@ BiSindoTranslator2/
 - **Target SDK**: API 34 (Android 14)
 - **Kotlin**: 1.9.22
 - **Gradle**: 8.5.0
-- **YOLOv5 Model**: TorchScript format (`.torchscript.pt`)
+- **YOLOv8 Model**: TorchScript format (`best.torchscript`)
 
 ---
 
@@ -254,8 +256,11 @@ class MainActivity : AppCompatActivity() {
     private lateinit var detectedText: TextView
     private lateinit var clearButton: Button
 
-    private lateinit var yoloDetector: YoloDetector
+    private lateinit var yoloDetector: YoloV8Detector
     private val cameraExecutor = Executors.newSingleThreadExecutor()
+
+    private var frameCount = 0
+    private var lastFpsTime = System.currentTimeMillis()
 
     private val requestPermissionLauncher =
         registerForActivityResult(ActivityResultContracts.RequestPermission()) { isGranted ->
@@ -271,7 +276,14 @@ class MainActivity : AppCompatActivity() {
         setContentView(R.layout.activity_main)
 
         initializeViews()
-        yoloDetector = YoloDetector(this)
+        
+        try {
+            yoloDetector = YoloV8Detector(this)
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to load model", e)
+            Toast.makeText(this, "Failed to load AI model", Toast.LENGTH_LONG).show()
+            return
+        }
 
         clearButton.setOnClickListener {
             detectedText.text = "Detected: "
@@ -306,6 +318,7 @@ class MainActivity : AppCompatActivity() {
 
             val imageAnalyzer = ImageAnalysis.Builder()
                 .setBackpressureStrategy(ImageAnalysis.STRATEGY_KEEP_ONLY_LATEST)
+                .setTargetResolution(android.util.Size(416, 416))
                 .build()
                 .also { analysis ->
                     analysis.setAnalyzer(cameraExecutor) { imageProxy ->
@@ -330,21 +343,41 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun processImage(imageProxy: ImageProxy) {
-        val startTime = System.currentTimeMillis()
-        val results = yoloDetector.analyzeImage(imageProxy)
-        val processingTime = System.currentTimeMillis() - startTime
+        try {
+            val results = yoloDetector.detect(imageProxy)
+            
+            // Calculate FPS
+            frameCount++
+            val currentTime = System.currentTimeMillis()
+            if (currentTime - lastFpsTime >= 1000) {
+                val fps = frameCount
+                frameCount = 0
+                lastFpsTime = currentTime
+                
+                runOnUiThread {
+                    fpsText.text = "FPS: $fps"
+                }
+            }
 
-        runOnUiThread {
-            overlayView.updateDetections(results)
-            
-            val detectedLabels = results.joinToString(", ") { it.label }
-            detectedText.text = "Detected: $detectedLabels"
-            
-            val fps = if (processingTime > 0) 1000 / processingTime else 0
-            fpsText.text = "FPS: $fps"
+            runOnUiThread {
+                overlayView.updateDetections(results, imageProxy.width, imageProxy.height)
+                
+                val detectedLabels = results
+                    .sortedByDescending { it.score }
+                    .take(3)
+                    .joinToString(", ") { "${it.label} (${(it.score * 100).toInt()}%)" }
+                
+                detectedText.text = if (detectedLabels.isEmpty()) {
+                    "Detected: -"
+                } else {
+                    "Detected: $detectedLabels"
+                }
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "Error processing image", e)
+        } finally {
+            imageProxy.close()
         }
-
-        imageProxy.close()
     }
 
     private fun allPermissionsGranted() = ContextCompat.checkSelfPermission(
@@ -362,73 +395,197 @@ class MainActivity : AppCompatActivity() {
 }
 ```
 
-### **YoloDetector.kt**
+### **YoloV8Detector.kt**
 
 ```kotlin
 package com.example.bisindotranslator2
 
 import android.content.Context
+import android.graphics.Bitmap
 import android.graphics.RectF
 import android.util.Log
 import androidx.camera.core.ImageProxy
 import org.pytorch.IValue
 import org.pytorch.Module
+import org.pytorch.Tensor
 import org.pytorch.torchvision.TensorImageUtils
+import kotlin.math.max
+import kotlin.math.min
 
 data class Detection(
     val rect: RectF,
     val label: String,
-    val score: Float
+    val score: Float,
+    val classId: Int
 )
 
-class YoloDetector(private val context: Context) {
+class YoloV8Detector(context: Context) {
 
-    private val module: Module by lazy {
-        Module.load(Utils.assetFilePath(context, MODEL_NAME))
+    private val module: Module
+    private val inputSize = 416
+    
+    // BiSindo alphabet labels (A-Z)
+    private val labels = arrayOf(
+        "A", "B", "C", "D", "E", "F", "G", "H", "I", "J", "K", "L", "M",
+        "N", "O", "P", "Q", "R", "S", "T", "U", "V", "W", "X", "Y", "Z"
+    )
+
+    init {
+        try {
+            val modelPath = Utils.assetFilePath(context, MODEL_NAME)
+            module = Module.load(modelPath)
+            Log.d(TAG, "✅ Model loaded successfully from: $modelPath")
+        } catch (e: Exception) {
+            Log.e(TAG, "❌ Failed to load model", e)
+            throw RuntimeException("Failed to load YOLOv8 model", e)
+        }
     }
 
-    fun analyzeImage(imageProxy: ImageProxy): List<Detection> {
+    fun detect(imageProxy: ImageProxy): List<Detection> {
         return try {
+            // Convert ImageProxy to Bitmap
             val bitmap = Utils.imageToBitmap(imageProxy)
             
+            // Resize to model input size
+            val resizedBitmap = Bitmap.createScaledBitmap(bitmap, inputSize, inputSize, true)
+            
+            // Convert to tensor with normalization
             val inputTensor = TensorImageUtils.bitmapToFloat32Tensor(
-                bitmap,
-                TensorImageUtils.TORCHVISION_NORM_MEAN_RGB,
-                TensorImageUtils.TORCHVISION_NORM_STD_RGB
+                resizedBitmap,
+                floatArrayOf(0f, 0f, 0f),  // No mean subtraction
+                floatArrayOf(255f, 255f, 255f)  // Normalize to [0, 1]
             )
 
-            val outputTuple = module.forward(IValue.from(inputTensor)).toTuple()
-            val outputTensor = outputTuple[0].toTensor()
-            val scores = outputTensor.dataAsFloatArray
-
-            // TODO: Implement actual YOLO post-processing
-            // This is a placeholder implementation
-            parseDetections(scores, imageProxy.width, imageProxy.height)
+            // Run inference
+            val outputTensor = module.forward(IValue.from(inputTensor)).toTensor()
+            
+            // Parse YOLOv8 output
+            val detections = parseYoloV8Output(
+                outputTensor,
+                imageProxy.width,
+                imageProxy.height,
+                CONF_THRESHOLD,
+                IOU_THRESHOLD
+            )
+            
+            Log.d(TAG, "Detected ${detections.size} objects")
+            detections
+            
         } catch (e: Exception) {
-            Log.e(TAG, "Error analyzing image", e)
+            Log.e(TAG, "Error during detection", e)
             emptyList()
         }
     }
 
-    private fun parseDetections(
-        scores: FloatArray,
-        imageWidth: Int,
-        imageHeight: Int
+    private fun parseYoloV8Output(
+        output: Tensor,
+        originalWidth: Int,
+        originalHeight: Int,
+        confThreshold: Float,
+        iouThreshold: Float
     ): List<Detection> {
-        // Placeholder implementation
-        // Replace with actual YOLO NMS and post-processing
-        return listOf(
-            Detection(
-                RectF(200f, 400f, 600f, 800f),
-                "A",
-                0.95f
-            )
-        )
+        
+        val outputArray = output.dataAsFloatArray
+        val shape = output.shape()
+        
+        // YOLOv8 output shape: [1, 84, 8400] or [1, num_classes+4, num_predictions]
+        // where 84 = 4 (bbox) + 80 (classes) for COCO, or 4 + 26 for BiSindo
+        
+        val numPredictions = shape[2].toInt()
+        val numClasses = shape[1].toInt() - 4
+        
+        Log.d(TAG, "Output shape: ${shape.contentToString()}, predictions: $numPredictions, classes: $numClasses")
+        
+        val detectionList = mutableListOf<Detection>()
+        
+        // Parse predictions
+        for (i in 0 until numPredictions) {
+            // Get bbox coordinates (center_x, center_y, width, height)
+            val cx = outputArray[i]
+            val cy = outputArray[numPredictions + i]
+            val w = outputArray[2 * numPredictions + i]
+            val h = outputArray[3 * numPredictions + i]
+            
+            // Get class scores
+            var maxScore = 0f
+            var maxClassId = 0
+            
+            for (c in 0 until numClasses) {
+                val score = outputArray[(4 + c) * numPredictions + i]
+                if (score > maxScore) {
+                    maxScore = score
+                    maxClassId = c
+                }
+            }
+            
+            // Filter by confidence threshold
+            if (maxScore > confThreshold) {
+                // Convert from center format to corner format
+                val x1 = (cx - w / 2) * originalWidth / inputSize
+                val y1 = (cy - h / 2) * originalHeight / inputSize
+                val x2 = (cx + w / 2) * originalWidth / inputSize
+                val y2 = (cy + h / 2) * originalHeight / inputSize
+                
+                // Clamp coordinates
+                val rect = RectF(
+                    max(0f, x1),
+                    max(0f, y1),
+                    min(originalWidth.toFloat(), x2),
+                    min(originalHeight.toFloat(), y2)
+                )
+                
+                val label = if (maxClassId < labels.size) labels[maxClassId] else "Unknown"
+                
+                detectionList.add(Detection(rect, label, maxScore, maxClassId))
+            }
+        }
+        
+        // Apply Non-Maximum Suppression
+        return applyNMS(detectionList, iouThreshold)
+    }
+
+    private fun applyNMS(detections: List<Detection>, iouThreshold: Float): List<Detection> {
+        if (detections.isEmpty()) return emptyList()
+        
+        // Sort by confidence score (descending)
+        val sortedDetections = detections.sortedByDescending { it.score }.toMutableList()
+        val keepDetections = mutableListOf<Detection>()
+        
+        while (sortedDetections.isNotEmpty()) {
+            val best = sortedDetections.removeAt(0)
+            keepDetections.add(best)
+            
+            sortedDetections.removeAll { detection ->
+                calculateIoU(best.rect, detection.rect) > iouThreshold
+            }
+        }
+        
+        return keepDetections
+    }
+
+    private fun calculateIoU(box1: RectF, box2: RectF): Float {
+        val intersectionLeft = max(box1.left, box2.left)
+        val intersectionTop = max(box1.top, box2.top)
+        val intersectionRight = min(box1.right, box2.right)
+        val intersectionBottom = min(box1.bottom, box2.bottom)
+        
+        if (intersectionRight < intersectionLeft || intersectionBottom < intersectionTop) {
+            return 0f
+        }
+        
+        val intersectionArea = (intersectionRight - intersectionLeft) * (intersectionBottom - intersectionTop)
+        val box1Area = (box1.right - box1.left) * (box1.bottom - box1.top)
+        val box2Area = (box2.right - box2.left) * (box2.bottom - box2.top)
+        val unionArea = box1Area + box2Area - intersectionArea
+        
+        return intersectionArea / unionArea
     }
 
     companion object {
-        private const val TAG = "YoloDetector"
-        private const val MODEL_NAME = "yolov5s.torchscript.pt"
+        private const val TAG = "YoloV8Detector"
+        private const val MODEL_NAME = "best.torchscript"
+        private const val CONF_THRESHOLD = 0.5f  // Confidence threshold
+        private const val IOU_THRESHOLD = 0.45f  // NMS IoU threshold
     }
 }
 ```
@@ -450,6 +607,10 @@ class OverlayView @JvmOverloads constructor(
 ) : View(context, attrs, defStyleAttr) {
 
     private var detections: List<Detection> = emptyList()
+    private var imageWidth = 1
+    private var imageHeight = 1
+    private var viewWidth = 1
+    private var viewHeight = 1
 
     private val boxPaint = Paint().apply {
         color = Color.GREEN
@@ -460,7 +621,7 @@ class OverlayView @JvmOverloads constructor(
 
     private val textPaint = Paint().apply {
         color = Color.WHITE
-        textSize = 60f
+        textSize = 48f
         typeface = Typeface.DEFAULT_BOLD
         isAntiAlias = true
     }
@@ -468,41 +629,73 @@ class OverlayView @JvmOverloads constructor(
     private val textBackgroundPaint = Paint().apply {
         color = Color.GREEN
         style = Paint.Style.FILL
-        alpha = 180
+        alpha = 200
     }
 
-    fun updateDetections(newDetections: List<Detection>) {
+    fun updateDetections(newDetections: List<Detection>, imgWidth: Int, imgHeight: Int) {
         detections = newDetections
+        imageWidth = imgWidth
+        imageHeight = imgHeight
         invalidate()
+    }
+
+    override fun onSizeChanged(w: Int, h: Int, oldw: Int, oldh: Int) {
+        super.onSizeChanged(w, h, oldw, oldh)
+        viewWidth = w
+        viewHeight = h
     }
 
     override fun onDraw(canvas: Canvas) {
         super.onDraw(canvas)
         
+        if (viewWidth == 0 || viewHeight == 0 || imageWidth == 0 || imageHeight == 0) return
+        
+        // Calculate scale factors to map image coordinates to view coordinates
+        val scaleX = viewWidth.toFloat() / imageWidth
+        val scaleY = viewHeight.toFloat() / imageHeight
+        
         for (detection in detections) {
+            // Scale bounding box to view coordinates
+            val scaledRect = RectF(
+                detection.rect.left * scaleX,
+                detection.rect.top * scaleY,
+                detection.rect.right * scaleX,
+                detection.rect.bottom * scaleY
+            )
+            
             // Draw bounding box
-            canvas.drawRect(detection.rect, boxPaint)
+            boxPaint.color = getColorForClass(detection.classId)
+            canvas.drawRect(scaledRect, boxPaint)
             
             // Draw label with background
             val label = "${detection.label} ${(detection.score * 100).toInt()}%"
             val textBounds = Rect()
             textPaint.getTextBounds(label, 0, label.length, textBounds)
             
+            val textX = scaledRect.left + 10
+            val textY = scaledRect.top - 10
+            
             val textBackground = RectF(
-                detection.rect.left,
-                detection.rect.top - textBounds.height() - 20,
-                detection.rect.left + textBounds.width() + 20,
-                detection.rect.top
+                textX - 5,
+                textY - textBounds.height() - 5,
+                textX + textBounds.width() + 10,
+                textY + 5
             )
             
+            textBackgroundPaint.color = getColorForClass(detection.classId)
             canvas.drawRect(textBackground, textBackgroundPaint)
-            canvas.drawText(
-                label,
-                detection.rect.left + 10,
-                detection.rect.top - 10,
-                textPaint
-            )
+            canvas.drawText(label, textX, textY, textPaint)
         }
+    }
+
+    private fun getColorForClass(classId: Int): Int {
+        // Generate different colors for different classes
+        val colors = arrayOf(
+            Color.GREEN, Color.BLUE, Color.CYAN, Color.MAGENTA,
+            Color.YELLOW, Color.RED, Color.rgb(255, 165, 0), // Orange
+            Color.rgb(128, 0, 128) // Purple
+        )
+        return colors[classId % colors.size]
     }
 }
 ```
@@ -519,35 +712,63 @@ import android.graphics.ImageFormat
 import android.graphics.Matrix
 import android.graphics.Rect
 import android.graphics.YuvImage
+import android.util.Log
 import androidx.camera.core.ImageProxy
 import java.io.ByteArrayOutputStream
 import java.io.File
 import java.io.FileOutputStream
+import java.nio.ByteBuffer
 
 object Utils {
+
+    private const val TAG = "Utils"
 
     fun assetFilePath(context: Context, assetName: String): String {
         val file = File(context.filesDir, assetName)
         
         if (file.exists() && file.length() > 0) {
+            Log.d(TAG, "Model file already exists: ${file.absolutePath}")
             return file.absolutePath
         }
 
-        context.assets.open(assetName).use { inputStream ->
-            FileOutputStream(file).use { outputStream ->
-                val buffer = ByteArray(4 * 1024)
-                var read: Int
-                while (inputStream.read(buffer).also { read = it } != -1) {
-                    outputStream.write(buffer, 0, read)
+        try {
+            context.assets.open(assetName).use { inputStream ->
+                FileOutputStream(file).use { outputStream ->
+                    val buffer = ByteArray(4 * 1024)
+                    var read: Int
+                    while (inputStream.read(buffer).also { read = it } != -1) {
+                        outputStream.write(buffer, 0, read)
+                    }
+                    outputStream.flush()
                 }
-                outputStream.flush()
             }
+            Log.d(TAG, "Model file copied to: ${file.absolutePath}, size: ${file.length()} bytes")
+        } catch (e: Exception) {
+            Log.e(TAG, "Error copying model file", e)
+            throw RuntimeException("Failed to copy model file", e)
         }
         
         return file.absolutePath
     }
 
     fun imageToBitmap(imageProxy: ImageProxy): Bitmap {
+        return when (imageProxy.format) {
+            ImageFormat.YUV_420_888 -> {
+                yuvToBitmap(imageProxy)
+            }
+            ImageFormat.JPEG -> {
+                val buffer = imageProxy.planes[0].buffer
+                val bytes = ByteArray(buffer.remaining())
+                buffer.get(bytes)
+                BitmapFactory.decodeByteArray(bytes, 0, bytes.size)
+            }
+            else -> {
+                throw IllegalArgumentException("Unsupported image format: ${imageProxy.format}")
+            }
+        }
+    }
+
+    private fun yuvToBitmap(imageProxy: ImageProxy): Bitmap {
         val yBuffer = imageProxy.planes[0].buffer
         val uBuffer = imageProxy.planes[1].buffer
         val vBuffer = imageProxy.planes[2].buffer
@@ -558,6 +779,7 @@ object Utils {
 
         val nv21 = ByteArray(ySize + uSize + vSize)
 
+        // U and V are swapped
         yBuffer.get(nv21, 0, ySize)
         vBuffer.get(nv21, ySize, vSize)
         uBuffer.get(nv21, ySize + vSize, uSize)
@@ -571,6 +793,8 @@ object Utils {
     }
 
     fun rotateBitmap(bitmap: Bitmap, rotationDegrees: Int): Bitmap {
+        if (rotationDegrees == 0) return bitmap
+        
         val matrix = Matrix()
         matrix.postRotate(rotationDegrees.toFloat())
         return Bitmap.createBitmap(bitmap, 0, 0, bitmap.width, bitmap.height, matrix, true)
@@ -646,7 +870,7 @@ object Utils {
             android:layout_height="wrap_content"
             android:layout_weight="1"
             android:paddingEnd="8dp"
-            android:text="Detected: "
+            android:text="Detected: -"
             android:textColor="@color/white"
             android:textSize="18sp"
             tools:ignore="RtlSymmetry" />
@@ -685,35 +909,94 @@ object Utils {
 
 ---
 
-## 🧩 Model Setup
+## 🧩 Model Setup & Export
 
-### **Step 1: Prepare Your Model**
+### **Step 1: Train Your YOLOv8 Model (Kaggle/Colab)**
 
-Convert your YOLOv5 model to TorchScript format:
+Use your training script to train the BiSindo YOLOv8 model:
 
 ```python
-# Python script to convert YOLOv5 to TorchScript
-import torch
+from ultralytics import YOLO
 
-model = torch.hub.load('ultralytics/yolov5', 'custom', path='your_model.pt')
-model.eval()
-
-example = torch.rand(1, 3, 640, 640)
-traced_script_module = torch.jit.trace(model, example)
-traced_script_module.save("yolov5s.torchscript.pt")
+# Train model
+model = YOLO("yolov8m.pt")
+results = model.train(
+    data="bisindo.yaml",
+    epochs=50,
+    imgsz=416,  # Important: match Android input size
+    batch=16,
+    optimizer="AdamW",
+    lr0=0.000333,
+    name="bisindo_yolov8m",
+    augment=True
+)
 ```
 
-### **Step 2: Add Model to Assets**
+### **Step 2: Export to TorchScript**
 
-1. Create the `assets` folder:
+After training, export your best model to TorchScript format:
+
+```python
+import torch
+from ultralytics import YOLO
+
+# Load your trained model
+model = YOLO("/path/to/best.pt")
+
+# Export to TorchScript format
+model.export(
+    format='torchscript',
+    imgsz=416,  # Must match your training size
+    optimize=True,
+    half=False  # Use False for better compatibility
+)
+
+print("✅ Model exported to TorchScript format!")
+print("📁 Find: best.torchscript in the weights folder")
+```
+
+### **Step 3: Add Model to Android Assets**
+
+1. After export, you'll find `best.torchscript` in your weights folder
+2. Copy it to your Android project:
+   ```
+   app/src/main/assets/best.torchscript
+   ```
+3. Create the `assets` folder if it doesn't exist:
    ```
    app/src/main/assets/
    ```
 
-2. Place your model file:
-   ```
-   app/src/main/assets/yolov5s.torchscript.pt
-   ```
+---
+
+## 🔧 Key Changes for YOLOv8 Integration
+
+### **What's Different from YOLOv5?**
+
+1. **Output Format**: YOLOv8 outputs `[1, num_classes+4, num_predictions]` instead of YOLOv5's format
+2. **No Objectness Score**: YOLOv8 directly outputs class probabilities
+3. **Center-based Bbox**: Uses (cx, cy, w, h) format
+4. **Built-in NMS**: We implement custom NMS for mobile
+
+### **Model Configuration**
+
+```kotlin
+// In YoloV8Detector.kt
+private val inputSize = 416  // Match your export size
+private const val CONF_THRESHOLD = 0.5f  // Adjust based on your needs
+private const val IOU_THRESHOLD = 0.45f  // NMS threshold
+```
+
+### **Normalization**
+
+```kotlin
+// Input normalization: divide by 255 to get [0, 1] range
+val inputTensor = TensorImageUtils.bitmapToFloat32Tensor(
+    resizedBitmap,
+    floatArrayOf(0f, 0f, 0f),      // No mean subtraction
+    floatArrayOf(255f, 255f, 255f)  // Normalize to [0, 1]
+)
+```
 
 ---
 
@@ -723,7 +1006,7 @@ traced_script_module.save("yolov5s.torchscript.pt")
 
 1. Install Android Studio Hedgehog or newer
 2. Enable USB Debugging on your Android device
-3. Prepare your YOLOv5 TorchScript model
+3. Train and export your YOLOv8 model to TorchScript
 
 ### **Steps**
 
@@ -739,14 +1022,17 @@ traced_script_module.save("yolov5s.torchscript.pt")
    - Navigate to the project folder
 
 3. **Add your model**
-   - Place `yolov5s.torchscript.pt` in `app/src/main/assets/`
+   - Place `best.torchscript` in `app/src/main/assets/`
+   - Verify the file size (should be several MB)
 
 4. **Sync Gradle**
    - Click "Sync Project with Gradle Files" in Android Studio
+   - Wait for dependencies to download
 
 5. **Connect your device**
    - Enable Developer Options and USB Debugging
    - Connect via USB cable
+   - Authorize the computer if prompted
 
 6. **Run the app**
    - Click the Run button ▶️ in Android Studio
@@ -759,46 +1045,131 @@ traced_script_module.save("yolov5s.torchscript.pt")
 
 ### **Common Issues**
 
-**1. Model not found**
+**1. Model not found error**
 ```
 Error: Model file not found in assets
 ```
-**Solution**: Ensure `yolov5s.torchscript.pt` is placed in `app/src/main/assets/`
+**Solution**: 
+- Ensure `best.torchscript` is in `app/src/main/assets/`
+- Check file name matches exactly (case-sensitive)
+- Verify file is not corrupted (check file size)
 
-**2. Camera permission denied**
+**2. Out of memory error**
 ```
-Camera permission denied
+OutOfMemoryError during inference
 ```
-**Solution**: Grant camera permission in Android Settings → Apps → BiSindo Translator 2
+**Solution**: 
+- Reduce input size in `YoloV8Detector.kt`: `private val inputSize = 320`
+- Re-export model with smaller size: `model.export(imgsz=320)`
 
-**3. Build failed**
-```
-Could not resolve org.pytorch:pytorch_android:1.10.0
-```
-**Solution**: Ensure you have internet connection and sync Gradle files
+**3. Low FPS (< 5 FPS)**
+**Solution**: 
+- Use a smaller model (yolov8n instead of yolov8m)
+- Reduce input resolution to 320x320
+- Enable GPU acceleration if available
+
+**4. No detections appearing**
+**Solution**: 
+- Lower confidence threshold: `private const val CONF_THRESHOLD = 0.3f`
+- Check if model was trained properly
+- Verify lighting conditions are adequate
+
+**5. Wrong detections or labels**
+**Solution**: 
+- Verify label order in `YoloV8Detector.kt` matches your training data
+- Check your `bisindo.yaml` class order
+- Ensure model was exported correctly
 
 ---
 
-## 📊 Performance Tips
+## 📊 Performance Optimization
 
-- **Model Size**: Use smaller models (YOLOv5s/n) for better FPS
-- **Input Resolution**: Lower resolution = faster inference
-- **Target FPS**: Aim for 15-30 FPS on mobile devices
-- **Battery**: Real-time detection is battery-intensive
+### **Model Selection**
+
+| Model | Size | Speed | Accuracy |
+|-------|------|-------|----------|
+| YOLOv8n | ~6 MB | Fast (20-30 FPS) | Good |
+| YOLOv8s | ~22 MB | Medium (15-25 FPS) | Better |
+| YOLOv8m | ~52 MB | Slow (10-15 FPS) | Best |
+
+### **Recommended Settings**
+
+```kotlin
+// For real-time performance on mid-range devices
+private val inputSize = 320
+private const val CONF_THRESHOLD = 0.5f
+private const val IOU_THRESHOLD = 0.45f
+
+// For better accuracy on high-end devices
+private val inputSize = 416
+private const val CONF_THRESHOLD = 0.6f
+private const val IOU_THRESHOLD = 0.45f
+```
+
+### **Tips for Better Performance**
+
+1. **Use YOLOv8n or YOLOv8s** for mobile deployment
+2. **Lower input resolution** (320x320) for faster inference
+3. **Adjust confidence threshold** based on your use case
+4. **Good lighting** significantly improves detection accuracy
+5. **Stable camera** - avoid shaky movements during detection
+
+---
+
+## 🧪 Testing Your Model
+
+### **Verify Model Output**
+
+Add this to `YoloV8Detector.kt` for debugging:
+
+```kotlin
+Log.d(TAG, "Output shape: ${shape.contentToString()}")
+Log.d(TAG, "Num predictions: $numPredictions")
+Log.d(TAG, "Num classes: $numClasses")
+Log.d(TAG, "Detections before NMS: ${detectionList.size}")
+Log.d(TAG, "Detections after NMS: ${results.size}")
+```
+
+### **Expected Output**
+
+- **Shape**: `[1, 30, 8400]` for 26 classes (4 bbox + 26 classes)
+- **FPS**: 10-30 depending on device and model size
+- **Detections**: Should see bounding boxes and labels on screen
+
+---
+
+## 🎯 Usage Tips
+
+### **For Best Detection Results**
+
+1. **Lighting**: Use good, even lighting
+2. **Distance**: Keep hand 1-2 feet from camera
+3. **Background**: Use plain, contrasting backgrounds
+4. **Steady Hand**: Hold sign steady for 1-2 seconds
+5. **Clear Signs**: Make clear, distinct hand gestures
+
+### **App Controls**
+
+- **Clear Button**: Clears the detected text display
+- **FPS Counter**: Shows real-time inference speed (top-right)
+- **Detection Display**: Shows detected letters with confidence scores (bottom)
 
 ---
 
 ## 🧱 Roadmap
 
+- [x] YOLOv8 TorchScript integration
+- [x] Real-time detection with NMS
+- [x] BiSindo A-Z alphabet support
 - [ ] Add front/back camera switch
-- [ ] Implement dynamic confidence threshold slider
+- [ ] Implement confidence threshold slider in UI
 - [ ] Add text-to-speech for detected signs
-- [ ] Implement letter/word accumulation
-- [ ] Add offline dictionary for BiSindo
-- [ ] Support for sentence formation
-- [ ] Add history of detected signs
-- [ ] Cloud model update support
+- [ ] Letter accumulation to form words
+- [ ] Save detection history
+- [ ] Export detected words/sentences
 - [ ] Multi-language support (ID/EN)
+- [ ] Dark/Light theme toggle
+- [ ] Model update via OTA
 
 ---
 
@@ -830,11 +1201,22 @@ Project Link: [https://github.com/yourusername/BiSindoTranslator2](https://githu
 
 ## 🙏 Acknowledgments
 
-- [Ultralytics YOLOv5](https://github.com/ultralytics/yolov5)
+- [Ultralytics YOLOv8](https://github.com/ultralytics/ultralytics)
 - [PyTorch Mobile](https://pytorch.org/mobile/)
 - [CameraX](https://developer.android.com/training/camerax)
 - BiSindo community
+- Indonesian Sign Language Dataset
 
 ---
 
-**Developed with ❤️ using Kotlin, CameraX, and PyTorch Mobile**
+## 📚 References
+
+- **YOLOv8 Paper**: [Ultralytics YOLOv8 Docs](https://docs.ultralytics.com/)
+- **PyTorch Mobile**: [PyTorch Mobile Documentation](https://pytorch.org/mobile/home/)
+- **BiSindo**: [Indonesian Sign Language Research](https://en.wikipedia.org/wiki/Indonesian_Sign_Language)
+
+---
+
+**Developed with ❤️ using Kotlin, CameraX, PyTorch Mobile, and YOLOv8**
+
+**Note**: This app requires a trained YOLOv8 model in TorchScript format. Train your model using the provided Python script, export to TorchScript, and place it in the assets folder.
